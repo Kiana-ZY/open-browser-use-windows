@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,12 @@ import (
 )
 
 const NativeHostName = "com.ifuryst.open_browser_use.extension"
-const DefaultSocketDir = "/tmp/open-browser-use"
+const TCPPort = 19832
+
+// DefaultSocketDir is now a function that returns platform-specific path
+func DefaultSocketDir() string {
+	return defaultSocketDir()
+}
 
 type Config struct {
 	SocketDir  string
@@ -81,24 +87,37 @@ func (r *Relay) SocketPath() string {
 	if r.config.SocketPath != "" {
 		return r.config.SocketPath
 	}
+	// On Windows the relay uses TCP, so return a placeholder identifier
+	if runtime.GOOS == "windows" {
+		return "tcp://open-browser-use"
+	}
 	return filepath.Join(socketDir(r.config.SocketDir), fmt.Sprintf("%s.sock", randomID()))
 }
 
 func (r *Relay) Serve(ctx context.Context) error {
 	socketPath := r.SocketPath()
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
-		return err
+
+	// On Windows, we use Named Pipes, so skip file operations
+	if runtime.GOOS != "windows" {
+		if err := mkdirAll(filepath.Dir(socketPath)); err != nil {
+			return err
+		}
+		_ = os.Remove(socketPath)
 	}
-	_ = os.Remove(socketPath)
-	listener, err := net.Listen("unix", socketPath)
+
+	listener, err := listenSocket(socketPath)
 	if err != nil {
 		return err
 	}
 	r.listener = listener
-	if err := os.Chmod(socketPath, 0o600); err != nil {
-		_ = listener.Close()
-		return err
+
+	if runtime.GOOS != "windows" {
+		if err := chmodSocket(socketPath); err != nil {
+			_ = listener.Close()
+			return err
+		}
 	}
+
 	if err := WriteActiveSocketRecord(r.config.SocketDir, socketPath); err != nil {
 		_ = listener.Close()
 		return err
@@ -116,10 +135,18 @@ func (r *Relay) Serve(ctx context.Context) error {
 
 	err = <-errCh
 	_ = listener.Close()
-	_ = os.Remove(socketPath)
+
+	if runtime.GOOS != "windows" {
+		_ = os.Remove(socketPath)
+	}
+
 	_ = RemoveActiveSocketRecord(r.config.SocketDir, socketPath)
 	r.closeClients()
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, io.EOF) {
+		r.logger.Info("open-browser-use native host stopped (browser extension disconnected)")
+		return nil
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
@@ -299,7 +326,7 @@ func socketDir(configured string) string {
 	if configured != "" {
 		return configured
 	}
-	return DefaultSocketDir
+	return DefaultSocketDir()
 }
 
 func ActiveSocketRecordPath(configuredDir string) string {
@@ -308,7 +335,7 @@ func ActiveSocketRecordPath(configuredDir string) string {
 
 func WriteActiveSocketRecord(configuredDir string, socketPath string) error {
 	dir := socketDir(configuredDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := mkdirAll(dir); err != nil {
 		return err
 	}
 	record := ActiveSocketRecord{
@@ -324,7 +351,7 @@ func WriteActiveSocketRecord(configuredDir string, socketPath string) error {
 	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	return chmodFile(path)
 }
 
 func ReadActiveSocketRecord(configuredDir string) (ActiveSocketRecord, error) {
@@ -354,6 +381,11 @@ func RemoveActiveSocketRecord(configuredDir string, socketPath string) error {
 		return nil
 	}
 	return os.Remove(ActiveSocketRecordPath(configuredDir))
+}
+
+// DialSocket connects to the socket/pipe using platform-specific implementation
+func DialSocket(socketPath string, timeout time.Duration) (net.Conn, error) {
+	return dialSocket(socketPath, timeout)
 }
 
 func randomID() string {

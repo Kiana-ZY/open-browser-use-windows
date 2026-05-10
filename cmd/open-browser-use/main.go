@@ -32,6 +32,8 @@ const defaultCLISessionID = "obu-cli"
 const defaultMCPSessionID = "obu-mcp"
 const chromeWebStoreUpdateURL = "https://clients2.google.com/service/update2/crx"
 const betaExtensionPublicKey = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBLT95WWVnHYH0pOBRH/eP+BWtlKVmLE/RHkERUTI2+PGDSQrbWVabmTw4CZ3yhjko04dijSX2Az8cnp65xh23Dh5mP5TCtiP9LexRFJokd8EsyeFdtKamMYr0hF1ZUc1/8ZpLnetAU65ZMB9VzHQBqpJWeUwuIvecgfRtGklDgJMjnvcq5J6pttZrzWrI/2B0BNufwsTQfEt7qLtDFPHXmUdtZfQbc2EfYFvkXLDAXicYviiocedrsAGIKUxpyQegobhUFL+tNLOuXKBpZlLFQn3xgm5CyGZwN6bueiV/S7reigVTKAMQ8BX0eacT22e8r0UzjsjkugeHOIonIvtQIDAQAB"
+const browserChrome = "chrome"
+const browserEdge = "edge"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -42,7 +44,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) > 0 && isNativeMessagingLaunch(args[0]) {
-		return runHost(host.DefaultSocketDir, "")
+		return runHost(host.DefaultSocketDir(), "")
 	}
 	cmd := newRootCommand()
 	cmd.SetArgs(args)
@@ -82,7 +84,7 @@ func newRootCommand() *cobra.Command {
 		newSimpleRPCCommand("ping", "ping", "Ping the browser backend"),
 		newSimpleRPCCommand("info", "getInfo", "Print browser backend info"),
 		newSimpleRPCCommand("tabs", "getTabs", "List session tabs"),
-		newSimpleRPCCommand("user-tabs", "getUserTabs", "List user Chrome tabs"),
+		newSimpleRPCCommand("user-tabs", "getUserTabs", "List user browser tabs"),
 		newHistoryCommand(),
 		newClaimTabCommand(),
 		newFinalizeTabsCommand(),
@@ -108,7 +110,7 @@ func newHostCommand() *cobra.Command {
 			return runHost(socketDir, socketPath)
 		},
 	}
-	cmd.Flags().StringVar(&socketDir, "socket-dir", host.DefaultSocketDir, "directory for SDK Unix sockets")
+	cmd.Flags().StringVar(&socketDir, "socket-dir", host.DefaultSocketDir(), "directory for SDK Unix sockets")
 	cmd.Flags().StringVar(&socketPath, "socket-path", "", "explicit SDK Unix socket path")
 	return cmd
 }
@@ -125,22 +127,24 @@ func newSetupCommand() *cobra.Command {
 	extensionID := defaultChromeExtensionID
 	var binaryPath string
 	var externalExtensionOutput string
+	var browser string
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Register Chrome integration for Open Browser Use",
+		Short: "Register browser integration for Open Browser Use",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			result, err := setupChrome(extensionID, binaryPath, externalExtensionOutput)
+			result, err := setupChrome(browser, extensionID, binaryPath, externalExtensionOutput)
 			if err != nil {
 				return err
 			}
-			status := detectBrowserExtension(host.DefaultSocketDir, 700*time.Millisecond)
+			status := detectBrowserExtension(browser, host.DefaultSocketDir(), 700*time.Millisecond)
 			return renderStoreSetupResult(cmd.OutOrStdout(), result, status)
 		},
 	}
-	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "Chrome extension id for allowed_origins")
+	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "extension id for allowed_origins")
 	cmd.Flags().StringVar(&binaryPath, "path", "", "native host binary target for the stable host link")
-	cmd.Flags().StringVar(&externalExtensionOutput, "external-extension-output", "", "Chrome external extension JSON output path")
+	cmd.Flags().StringVar(&externalExtensionOutput, "external-extension-output", "", "external extension JSON output path")
+	cmd.Flags().StringVar(&browser, "browser", browserChrome, "browser to configure (chrome or edge)")
 	cmd.AddCommand(newSetupBetaCommand())
 	return cmd
 }
@@ -150,6 +154,7 @@ func newSetupBetaCommand() *cobra.Command {
 	var binaryPath string
 	var zipPath string
 	var noOpen bool
+	var browser string
 	cmd := &cobra.Command{
 		Use:   "beta",
 		Short: "Register the native host and prepare the beta extension package",
@@ -184,19 +189,19 @@ func newSetupBetaCommand() *cobra.Command {
 			if effectiveExtensionID != unpackedExtensionID {
 				return fmt.Errorf("--extension-id %s does not match keyed beta ZIP extension id %s", effectiveExtensionID, unpackedExtensionID)
 			}
-			manifestPath, err := installNativeManifest(effectiveExtensionID, binaryPath, "")
+			manifestPath, err := installNativeManifest(browser, effectiveExtensionID, binaryPath, "")
 			if err != nil {
 				return err
 			}
 			if !noOpen {
-				if err := openChromeExtensionsPage(); err != nil {
+				if err := openBrowserExtensionsPage(browser); err != nil {
 					return err
 				}
 				if err := revealFile(installZIPPath); err != nil {
 					return err
 				}
 			}
-			status := detectBrowserExtension(host.DefaultSocketDir, 700*time.Millisecond)
+			status := detectBrowserExtension(browser, host.DefaultSocketDir(), 700*time.Millisecond)
 			status.InstallCommand = "open-browser-use setup beta"
 			status.UpgradeCommand = "open-browser-use setup beta"
 			return renderManualSetupResult(cmd.OutOrStdout(), manualSetupResult{
@@ -204,15 +209,17 @@ func newSetupBetaCommand() *cobra.Command {
 				ExtensionID:        effectiveExtensionID,
 				ZIPPath:            installZIPPath,
 				UnpackedPath:       unpackedPath,
-				OpenedChrome:       !noOpen,
+				OpenedBrowser:      !noOpen,
 				OpenedFileManager:  !noOpen,
+				Browser:            browser,
 			}, status)
 		},
 	}
-	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "Chrome extension id for allowed_origins")
+	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "extension id for allowed_origins")
 	cmd.Flags().StringVar(&binaryPath, "path", "", "native host binary target for the stable host link")
 	cmd.Flags().StringVar(&zipPath, "zip", "", "existing extension zip path; defaults to the latest GitHub Release zip")
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "download and unpack the extension without opening Chrome")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "download and unpack the extension without opening the browser")
+	cmd.Flags().StringVar(&browser, "browser", browserChrome, "browser to configure (chrome or edge)")
 	return cmd
 }
 
@@ -240,12 +247,13 @@ func newInstallManifestCommand() *cobra.Command {
 	extensionID := defaultChromeExtensionID
 	var binaryPath string
 	var outputPath string
+	var browser string
 	cmd := &cobra.Command{
 		Use:   "install-manifest",
-		Short: "Install the Chrome native messaging host manifest",
+		Short: "Install the native messaging host manifest",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := installNativeManifest(extensionID, binaryPath, outputPath)
+			path, err := installNativeManifest(browser, extensionID, binaryPath, outputPath)
 			if err != nil {
 				return err
 			}
@@ -253,13 +261,14 @@ func newInstallManifestCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "Chrome extension id for allowed_origins")
+	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "extension id for allowed_origins")
 	cmd.Flags().StringVar(&binaryPath, "path", "", "native host binary target for the stable host link")
 	cmd.Flags().StringVar(&outputPath, "output", "", "native host manifest output path")
+	cmd.Flags().StringVar(&browser, "browser", browserChrome, "browser to configure (chrome or edge)")
 	return cmd
 }
 
-func installNativeManifest(extensionID string, binaryPath string, outputPath string) (string, error) {
+func installNativeManifest(browser string, extensionID string, binaryPath string, outputPath string) (string, error) {
 	targetPath, err := resolveNativeHostTarget(binaryPath)
 	if err != nil {
 		return "", err
@@ -277,7 +286,7 @@ func installNativeManifest(extensionID string, binaryPath string, outputPath str
 	}
 	path := outputPath
 	if path == "" {
-		path, err = defaultNativeHostManifestPath()
+		path, err = defaultNativeHostManifestPath(browser)
 		if err != nil {
 			return "", err
 		}
@@ -292,7 +301,29 @@ func installNativeManifest(extensionID string, binaryPath string, outputPath str
 	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
 		return "", err
 	}
+	if runtime.GOOS == "windows" {
+		if err := ensureWindowsRegistryKey(path, browser); err != nil {
+			return "", fmt.Errorf("manifest installed but failed to create registry key: %w", err)
+		}
+	}
 	return path, nil
+}
+
+func ensureWindowsRegistryKey(manifestPath string, browser string) error {
+	var regPath string
+	switch browser {
+	case browserEdge:
+		regPath = `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\` + host.NativeHostName
+	case browserChrome:
+		regPath = `HKCU\Software\Google\Chrome\NativeMessagingHosts\` + host.NativeHostName
+	default:
+		return nil
+	}
+	cmd := exec.Command("reg", "add", regPath, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("reg add %s: %w", regPath, err)
+	}
+	return nil
 }
 
 type setupResult struct {
@@ -305,8 +336,9 @@ type manualSetupResult struct {
 	ExtensionID        string
 	ZIPPath            string
 	UnpackedPath       string
-	OpenedChrome       bool
+	OpenedBrowser      bool
 	OpenedFileManager  bool
+	Browser            string
 }
 
 type browserExtensionStatus struct {
@@ -321,12 +353,12 @@ type browserExtensionStatus struct {
 	Error           string
 }
 
-func setupChrome(extensionID string, binaryPath string, externalExtensionOutput string) (setupResult, error) {
-	manifestPath, err := installNativeManifest(extensionID, binaryPath, "")
+func setupChrome(browser string, extensionID string, binaryPath string, externalExtensionOutput string) (setupResult, error) {
+	manifestPath, err := installNativeManifest(browser, extensionID, binaryPath, "")
 	if err != nil {
 		return setupResult{}, err
 	}
-	extensionPath, err := installChromeExternalExtension(extensionID, externalExtensionOutput)
+	extensionPath, err := installChromeExternalExtension(browser, extensionID, externalExtensionOutput)
 	if err != nil {
 		return setupResult{}, err
 	}
@@ -337,7 +369,7 @@ func setupChrome(extensionID string, binaryPath string, externalExtensionOutput 
 }
 
 func renderStartupStatus(writer io.Writer) error {
-	status := detectBrowserExtension(host.DefaultSocketDir, 700*time.Millisecond)
+	status := detectBrowserExtension("", host.DefaultSocketDir(), 700*time.Millisecond)
 	fmt.Fprintln(writer, "Open Browser Use")
 	fmt.Fprintf(writer, "📦 CLI version: %s\n", version)
 	fmt.Fprintf(writer, "🧩 Browser extension: %s\n", status.summary())
@@ -387,6 +419,12 @@ func renderStoreSetupResult(writer io.Writer, result setupResult, status browser
 }
 
 func renderManualSetupResult(writer io.Writer, result manualSetupResult, status browserExtensionStatus) error {
+	extURL := "chrome://extensions"
+	browserName := "Chrome"
+	if result.Browser == browserEdge {
+		extURL = "edge://extensions"
+		browserName = "Edge"
+	}
 	fmt.Fprintln(writer, "✅ Open Browser Use beta setup")
 	fmt.Fprintf(writer, "1. ✅ Registered native host\n   %s\n", result.NativeManifestPath)
 	fmt.Fprintf(writer, "2. ✅ Prepared browser extension package\n   Extension id: %s\n   ZIP: %s\n   Includes stable extension key for this id.\n", result.ExtensionID, result.ZIPPath)
@@ -397,10 +435,10 @@ func renderManualSetupResult(writer io.Writer, result manualSetupResult, status 
 		fmt.Fprintln(writer, "All set. The browser extension is installed, connected, and on the expected version.")
 		return nil
 	}
-	if result.OpenedChrome {
-		fmt.Fprintln(writer, "Opened chrome://extensions for you.")
+	if result.OpenedBrowser {
+		fmt.Fprintf(writer, "Opened %s for you.\n", extURL)
 	} else {
-		fmt.Fprintln(writer, "Open chrome://extensions manually.")
+		fmt.Fprintf(writer, "Open %s manually.\n", extURL)
 	}
 	if result.OpenedFileManager {
 		fmt.Fprintln(writer, "Opened the extension package in Finder/file manager.")
@@ -408,14 +446,14 @@ func renderManualSetupResult(writer io.Writer, result manualSetupResult, status 
 		fmt.Fprintf(writer, "Open the folder containing the package: %s\n", filepath.Dir(result.ZIPPath))
 	}
 	fmt.Fprintln(writer, "Next:")
-	fmt.Fprintln(writer, "  1. Turn on Developer mode in chrome://extensions.")
-	fmt.Fprintln(writer, "  2. Drag the ZIP file into the Chrome extensions page to install it manually.")
-	fmt.Fprintln(writer, "  3. Approve or enable the Open Browser Use extension if Chrome asks.")
+	fmt.Fprintf(writer, "  1. Turn on Developer mode in %s.\n", extURL)
+	fmt.Fprintf(writer, "  2. Drag the ZIP file into the %s extensions page to install it manually.\n", browserName)
+	fmt.Fprintf(writer, "  3. Approve or enable the Open Browser Use extension if %s asks.\n", browserName)
 	fmt.Fprintln(writer, "  4. Verify the connection: open-browser-use info")
 	return nil
 }
 
-func detectBrowserExtension(socketDir string, timeout time.Duration) browserExtensionStatus {
+func detectBrowserExtension(browser string, socketDir string, timeout time.Duration) browserExtensionStatus {
 	status := browserExtensionStatus{
 		ExpectedVersion: version,
 		InstallCommand:  "open-browser-use setup",
@@ -440,7 +478,18 @@ func detectBrowserExtension(socketDir string, timeout time.Duration) browserExte
 		status.Error = err.Error()
 	}
 
-	if detected, ok := detectInstalledChromeExtension(); ok {
+	if browser == "" && runtime.GOOS == "windows" {
+		for _, b := range []string{browserEdge, browserChrome} {
+			if detected, ok := detectInstalledChromeExtension(b); ok {
+				status.Installed = true
+				status.ExtensionID = detected.ExtensionID
+				status.Version = detected.Version
+				status.VersionSource = detected.Source
+				return status
+			}
+		}
+	}
+	if detected, ok := detectInstalledChromeExtension(browser); ok {
 		status.Installed = true
 		status.ExtensionID = detected.ExtensionID
 		status.Version = detected.Version
@@ -455,14 +504,14 @@ type detectedExtension struct {
 	Source      string
 }
 
-func detectInstalledChromeExtension() (detectedExtension, bool) {
+func detectInstalledChromeExtension(browser string) (detectedExtension, bool) {
 	candidates := []string{defaultChromeExtensionID}
 	if betaID, err := extensionIDFromPublicKey(betaExtensionPublicKey); err == nil && betaID != defaultChromeExtensionID {
 		candidates = append(candidates, betaID)
 	}
 	var best detectedExtension
 	for _, extensionID := range candidates {
-		detected, ok := detectInstalledChromeExtensionByID(extensionID)
+		detected, ok := detectInstalledChromeExtensionByID(browser, extensionID)
 		if !ok {
 			continue
 		}
@@ -473,8 +522,8 @@ func detectInstalledChromeExtension() (detectedExtension, bool) {
 	return best, best.Version != ""
 }
 
-func detectInstalledChromeExtensionByID(extensionID string) (detectedExtension, bool) {
-	root, err := defaultChromeUserDataDir()
+func detectInstalledChromeExtensionByID(browser string, extensionID string) (detectedExtension, bool) {
+	root, err := defaultChromeUserDataDir(browser)
 	if err != nil {
 		return detectedExtension{}, false
 	}
@@ -515,7 +564,7 @@ func detectInstalledChromeExtensionByID(extensionID string) (detectedExtension, 
 	return best, best.Version != ""
 }
 
-func defaultChromeUserDataDir() (string, error) {
+func defaultChromeUserDataDir(browser string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -525,6 +574,15 @@ func defaultChromeUserDataDir() (string, error) {
 		return filepath.Join(home, "Library/Application Support/Google/Chrome"), nil
 	case "linux":
 		return filepath.Join(home, ".config/google-chrome"), nil
+	case "windows":
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if browser == browserEdge {
+			return filepath.Join(localAppData, "Microsoft", "Edge", "User Data"), nil
+		}
+		return filepath.Join(localAppData, "Google", "Chrome", "User Data"), nil
 	default:
 		return "", fmt.Errorf("Chrome extension detection is not implemented for %s", runtime.GOOS)
 	}
@@ -612,7 +670,7 @@ func compareChromeVersions(left string, right string) int {
 	return 0
 }
 
-func installChromeExternalExtension(extensionID string, outputPath string) (string, error) {
+func installChromeExternalExtension(browser string, extensionID string, outputPath string) (string, error) {
 	allowedExtensionID := strings.TrimSpace(extensionID)
 	if allowedExtensionID == "" {
 		allowedExtensionID = defaultChromeExtensionID
@@ -620,7 +678,7 @@ func installChromeExternalExtension(extensionID string, outputPath string) (stri
 	path := outputPath
 	if path == "" {
 		var err error
-		path, err = defaultChromeExternalExtensionPath(allowedExtensionID)
+		path, err = defaultChromeExternalExtensionPath(browser, allowedExtensionID)
 		if err != nil {
 			return "", err
 		}
@@ -653,7 +711,7 @@ func addSocketFlags(cmd *cobra.Command, options *socketOptions) {
 		options.sessionID = defaultCLISessionID
 	}
 	cmd.Flags().StringVar(&options.socketPath, "socket", "", "open-browser-use Unix socket path")
-	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir, "directory containing active socket registry")
+	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir(), "directory containing active socket registry")
 	cmd.Flags().DurationVar(&options.timeout, "timeout", 10*time.Second, "request timeout")
 	cmd.Flags().StringVar(&options.sessionID, "session-id", options.sessionID, "browser session id used for tab grouping and cleanup")
 }
@@ -1616,12 +1674,21 @@ func applySessionDefaults(params map[string]any, sessionID string) {
 
 func dialBrowserSocket(socketPath string, socketDir string, timeout time.Duration) (net.Conn, error) {
 	if socketPath != "" {
-		return net.DialTimeout("unix", socketPath, timeout)
+		return host.DialSocket(socketPath, timeout)
+	}
+
+	// Windows uses fixed TCP port - no socket file discovery needed
+	if runtime.GOOS == "windows" {
+		conn, err := host.DialSocket("", timeout)
+		if err != nil {
+			return nil, fmt.Errorf("TCP relay on 127.0.0.1:%d is not available; ensure the browser extension is running: %w", host.TCPPort, err)
+		}
+		return conn, nil
 	}
 
 	record, err := host.ReadActiveSocketRecord(socketDir)
 	if err == nil {
-		conn, dialErr := net.DialTimeout("unix", record.SocketPath, timeout)
+		conn, dialErr := host.DialSocket(record.SocketPath, timeout)
 		if dialErr == nil {
 			return conn, nil
 		}
@@ -1649,8 +1716,19 @@ type socketCandidate struct {
 func scanSocketDir(socketDir string, skipPath string, timeout time.Duration) (net.Conn, error) {
 	dir := socketDir
 	if dir == "" {
-		dir = host.DefaultSocketDir
+		dir = host.DefaultSocketDir()
 	}
+
+	// On Windows, connect to the TCP relay directly
+	if runtime.GOOS == "windows" {
+		conn, err := host.DialSocket("", timeout)
+		if err == nil {
+			return conn, nil
+		}
+		return nil, fmt.Errorf("TCP relay not available on 127.0.0.1:%d: %w", host.TCPPort, err)
+	}
+
+	// Unix: scan for .sock files
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -1688,7 +1766,7 @@ func scanSocketDir(socketDir string, skipPath string, timeout time.Duration) (ne
 		if candidate.path == skipPath {
 			continue
 		}
-		conn, err := net.DialTimeout("unix", candidate.path, probeTimeout)
+		conn, err := host.DialSocket(candidate.path, probeTimeout)
 		if err == nil {
 			repairActiveSocketRecord(dir, candidate)
 			cleanupStaleSocketCandidates(dir, candidates, candidate.path, probeTimeout)
@@ -1712,7 +1790,7 @@ func cleanupStaleSocketCandidates(socketDir string, candidates []socketCandidate
 		if candidate.path == keepPath {
 			continue
 		}
-		conn, err := net.DialTimeout("unix", candidate.path, cleanupTimeout)
+		conn, err := host.DialSocket(candidate.path, cleanupTimeout)
 		if err == nil {
 			_ = conn.Close()
 			continue
@@ -1741,7 +1819,7 @@ func repairActiveSocketRecord(socketDir string, candidate socketCandidate) {
 func removeSocketPathIfInDir(socketDir string, socketPath string) {
 	dir := socketDir
 	if dir == "" {
-		dir = host.DefaultSocketDir
+		dir = host.DefaultSocketDir()
 	}
 	dirAbs, err := filepath.Abs(dir)
 	if err != nil {
@@ -1821,8 +1899,15 @@ func resolveNativeHostTarget(binaryPath string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("native host binary target is a directory: %s", absolutePath)
 	}
-	if info.Mode()&0o111 == 0 {
-		return "", fmt.Errorf("native host binary target is not executable: %s", absolutePath)
+	// On Windows, check for .exe extension instead of Unix permission bits
+	if runtime.GOOS == "windows" {
+		if !strings.HasSuffix(strings.ToLower(absolutePath), ".exe") {
+			return "", fmt.Errorf("native host binary target is not a Windows executable: %s", absolutePath)
+		}
+	} else {
+		if info.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("native host binary target is not executable: %s", absolutePath)
+		}
 	}
 	return absolutePath, nil
 }
@@ -1837,12 +1922,18 @@ func stableNativeHostPath() (string, error) {
 		return filepath.Join(home, "Library/Application Support/OpenBrowserUse/native-host/open-browser-use"), nil
 	case "linux":
 		return filepath.Join(home, ".local/share/open-browser-use/native-host/open-browser-use"), nil
+	case "windows":
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "OpenBrowserUse", "native-host", "open-browser-use.exe"), nil
 	default:
 		return "", fmt.Errorf("stable native host link path is not implemented for %s", runtime.GOOS)
 	}
 }
 
-func defaultChromeExternalExtensionPath(extensionID string) (string, error) {
+func defaultChromeExternalExtensionPath(browser string, extensionID string) (string, error) {
 	filename := strings.TrimSpace(extensionID) + ".json"
 	if filename == ".json" {
 		return "", errors.New("Chrome extension id is empty")
@@ -1856,6 +1947,19 @@ func defaultChromeExternalExtensionPath(extensionID string) (string, error) {
 		return filepath.Join(home, "Library/Application Support/Google/Chrome/External Extensions", filename), nil
 	case "linux":
 		return filepath.Join("/opt/google/chrome/extensions", filename), nil
+	case "windows":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if browser == browserEdge {
+			return filepath.Join(localAppData, "Microsoft", "Edge", "User Data", "External Extensions", filename), nil
+		}
+		return filepath.Join(localAppData, "Google", "Chrome", "User Data", "External Extensions", filename), nil
 	default:
 		return "", fmt.Errorf("Chrome external extension setup is not implemented for %s", runtime.GOOS)
 	}
@@ -1868,10 +1972,32 @@ func installStableNativeHostLink(targetPath string, linkPath string) error {
 	if err := os.Remove(linkPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// On Windows, copy the file instead of creating a symlink
+	// (symlinks require admin privileges or developer mode)
+	if runtime.GOOS == "windows" {
+		return copyFile(targetPath, linkPath)
+	}
 	return os.Symlink(targetPath, linkPath)
 }
 
-func defaultNativeHostManifestPath() (string, error) {
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
+}
+
+func defaultNativeHostManifestPath(browser string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -1882,6 +2008,15 @@ func defaultNativeHostManifestPath() (string, error) {
 		return filepath.Join(home, "Library/Application Support/Google/Chrome/NativeMessagingHosts", filename), nil
 	case "linux":
 		return filepath.Join(home, ".config/google-chrome/NativeMessagingHosts", filename), nil
+	case "windows":
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		if browser == browserEdge {
+			return filepath.Join(localAppData, "Microsoft", "Edge", "User Data", "NativeMessagingHosts", filename), nil
+		}
+		return filepath.Join(localAppData, "Google", "Chrome", "User Data", "NativeMessagingHosts", filename), nil
 	default:
 		return "", fmt.Errorf("default manifest install path is not implemented for %s; pass --output", runtime.GOOS)
 	}
@@ -2059,6 +2194,12 @@ func defaultUnpackedExtensionDir() (string, error) {
 		return filepath.Join(home, "Library/Application Support/OpenBrowserUse/chrome-extension/release"), nil
 	case "linux":
 		return filepath.Join(home, ".local/share/open-browser-use/chrome-extension/release"), nil
+	case "windows":
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(localAppData, "OpenBrowserUse", "chrome-extension", "release"), nil
 	default:
 		return "", fmt.Errorf("release extension setup is not implemented for %s", runtime.GOOS)
 	}
@@ -2287,15 +2428,21 @@ func revealFile(path string) error {
 	return cmd.Process.Release()
 }
 
-func openChromeExtensionsPage() error {
+func openBrowserExtensionsPage(browser string) error {
 	var cmd *exec.Cmd
+	extURL := "chrome://extensions/"
+	if browser == browserEdge {
+		extURL = "edge://extensions/"
+	}
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", "-a", "Google Chrome", "chrome://extensions/")
+		cmd = exec.Command("open", "-a", "Google Chrome", extURL)
 	case "linux":
-		cmd = exec.Command("xdg-open", "chrome://extensions/")
+		cmd = exec.Command("xdg-open", extURL)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", extURL)
 	default:
-		return fmt.Errorf("opening Chrome extensions page is not implemented for %s", runtime.GOOS)
+		return fmt.Errorf("opening extensions page is not implemented for %s", runtime.GOOS)
 	}
 	if err := cmd.Start(); err != nil {
 		return err

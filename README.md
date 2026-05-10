@@ -1,136 +1,121 @@
-# Open Browser Use
+# Open Browser Use — Windows & Edge
 
-[![English](https://img.shields.io/badge/English-Click-yellow)](./README.md)
-[![简体中文](https://img.shields.io/badge/简体中文-点击查看-orange)](./README.zh-CN.md)
-[![Release](https://img.shields.io/github/v/release/iFurySt/open-codex-browser-use)](https://github.com/iFurySt/open-codex-browser-use/releases)
-[![npm SDK](https://img.shields.io/npm/v/open-browser-use-sdk?label=npm%20SDK)](https://www.npmjs.com/package/open-browser-use-sdk)
-[![PyPI SDK](https://img.shields.io/pypi/v/open-browser-use-sdk?label=PyPI%20SDK)](https://pypi.org/project/open-browser-use-sdk/)
-[![Go SDK](https://pkg.go.dev/badge/github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go.svg)](https://pkg.go.dev/github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-codex-browser-use)
+[原项目](https://github.com/iFurySt/open-codex-browser-use) 面向 macOS/Linux + Chrome。本项目进行了完整的 **Windows 适配**，新增 **Microsoft Edge** 支持。
 
----
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-> [!TIP]
-> Interested in Computer Use? Check out [open-computer-use](https://github.com/iFurySt/open-codex-computer-use).
+## 改动
 
-`open-browser-use` is a browser automation layer that stays neutral across
-agent runtimes. It is also an open-source alternative to the Chrome Browser Use
-capability recently shipped in Codex.app. For the story behind it, see the
-[Browser Use Deep Dive](https://www.ifuryst.com/en/blog/2026/open-browser-use/).
+| 模块 | 改动 |
+|------|------|
+| **中继传输** | Unix 域套接字 → TCP `127.0.0.1:19832` |
+| **Edge 支持** | `setup` / `setup beta` / `install-manifest` 增加 `--browser edge` |
+| **注册表** | setup 时自动写入 Edge 注册表键 |
+| **连接发现** | Windows 跳过 socket 文件扫描，直连 TCP |
+| **Python SDK** | Named Pipe → TCP socket |
+| **错误信息** | 修正 named-pipe 等误导性提示 |
 
-Under the hood, it pairs a browser extension with the `open-browser-use` CLI.
-You can integrate it through the JavaScript SDK, Python SDK, Go SDK, or the CLI.
+## 架构
 
-https://github.com/user-attachments/assets/bcfba878-f6a8-44b9-b84b-29c7e0285687
+```
+Edge / Chrome 扩展 (MV3)
+    │  stdio (Native Messaging)
+    ▼
+Native Host 中继 (open-browser-use.exe)
+    │  TCP 127.0.0.1:19832 (Windows)
+    │  Unix Socket (macOS / Linux)
+    ▼
+CLI / Python SDK / Go SDK
+```
 
-## Quick Start
+## 快速开始
+
+### 编译
 
 ```bash
-brew tap iFurySt/open-browser-use
-brew install open-browser-use
-open-browser-use setup beta
+go build -o open-browser-use.exe ./cmd/open-browser-use/
 ```
 
-### Install the CLI
+### 安装到 Edge
 
 ```bash
-# npm
-npm i -g open-browser-use
-
-# Homebrew
-brew tap iFurySt/open-browser-use && brew install open-browser-use
-
-# Upgrade
-brew upgrade open-browser-use
+.\open-browser-use.exe setup beta --browser edge
 ```
 
-### Set Up Chrome
+在 `edge://extensions/` 开启**开发者模式**，将下载的 ZIP 拖入页面安装扩展。
 
-Register the native host for the extension, then install the matching Chrome
-extension.
+### 验证
 
 ```bash
-# The Chrome Web Store listing is still under review, so skip this for now.
-# open-browser-use setup
-
-# Install from the zip/crx package instead. Drag the opened package into
-# chrome://extensions/.
-open-browser-use setup beta
+obu info
 ```
 
-You can also download the latest package directly from
-[GitHub Releases](https://github.com/iFurySt/open-codex-browser-use/releases)
-and install it manually.
+## CLI 命令
 
-### Use It
+所有命令需带 `--session-id`，每个任务用一个唯一 ID。
 
-#### SDK
+| 命令 | 说明 |
+|------|------|
+| `obu info` | 扩展版本和元数据 |
+| `obu ping` | 连通性检查 |
+| `obu user-tabs` | 列出所有标签页 |
+| `obu tabs` | 列出会话标签页 |
+| `obu open-tab --url URL --session-id ID` | 打开新标签页 |
+| `obu claim-tab --tab-id ID --session-id ID` | 认领已有标签页 |
+| `obu navigate --tab-id ID --url URL --session-id ID` | 导航 |
+| `obu cdp --tab-id ID --method M --params JSON --session-id ID` | CDP 命令 |
+| `obu history --query "..." --limit N --session-id ID` | 搜索历史 |
+| `obu finalize-tabs --keep JSON --session-id ID` | 关闭/移交会话标签页 |
 
-```bash
-# JavaScript / TypeScript
-npm install open-browser-use-sdk
-
-# Python
-pip install open-browser-use-sdk
-
-# Go
-go get github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go
+```cmd
+SET OBU_SESSION_ID=obu-task-20260511
+obu open-tab --session-id %OBU_SESSION_ID% --url https://github.com/trending
+obu cdp --session-id %OBU_SESSION_ID% --tab-id <id> --method Runtime.evaluate --params "{\"expression\":\"document.title\"}"
+obu finalize-tabs --session-id %OBU_SESSION_ID% --keep "[]"
 ```
 
-The SDK package name is `open-browser-use-sdk` on both npm and PyPI. Python
-code imports it as `open_browser_use`; Go code imports the SDK package as
-`obu`.
+## SDK
 
-#### Skill
+### Python
 
-Install the skill directly:
+```python
+from open_browser_use import OpenBrowserUseClient
 
-```bash
-# Install for Codex
-npx skills add iFurySt/open-codex-browser-use -g -a codex --skill open-browser-use --copy -y
-npx skills ls -g -a codex | rg 'open-browser-use'
-codex exec --skip-git-repo-check "Use open-browser-use to check today’s Hacker News and summarize the most worth-reading posts."
-
-# Install for Claude Code
-npx skills add iFurySt/open-codex-browser-use -g -a claude-code --skill open-browser-use --copy -y
+client = OpenBrowserUseClient(socket_path="")  # Windows 上忽略
+browser = client.connect()
+tab = browser.new_tab("https://example.com")
+print(tab.title())
+browser.close()
 ```
 
-Update an existing global install, including the Codex install created above:
+### Go
 
-```bash
-npx skills update open-browser-use -g -y
+```go
+import obu "github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go"
 
-# `upgrade` is an alias for `update`
-npx skills upgrade open-browser-use -g -y
+browser, _ := obu.ConnectActive(obu.Options{})
+defer browser.Close()
+result, _ := browser.Client.GetInfo()
 ```
 
-You can also manually download and install the
-[`open-browser-use` skill](./skills/open-browser-use), then start using it from
-your agent.
+## AI Agent Skill
 
-Downloadable `.skill` and `.zip` packages are available in
-[GitHub Releases](https://github.com/iFurySt/open-codex-browser-use/releases).
+Skill 文件在 `skills/open-browser-use/`，支持 Claude Code 和 Codex：
 
-#### MCP
-
-Install the MCP server into all supported global agent configs:
-
-```bash
-npx add-mcp "obu mcp" --name open_browser_use --all -g -y
-npx add-mcp list -g
+```
+.claude/skills/open-browser-use/     # Claude Code
+~/.codex/skills/open-browser-use/    # Codex
 ```
 
-You can also configure an agent runtime with local MCP stdio support manually:
+## 故障排除
 
-```toml
-[mcp_servers.open_browser_use]
-command = "obu"
-args = ["mcp"]
-```
+| 症状 | 处理 |
+|------|------|
+| `TCP relay not available` | 重启 Edge |
+| `Specified native messaging host not found` | `obu install-manifest --browser edge` |
+| 命令超时 | 点击 Edge 工具栏中的扩展图标 |
+| 端口 19832 连接被拒 | 主机进程已退出，重启 Edge |
 
-The server exposes browser tools for tab listing, opening, claiming,
-navigation, CDP, action plans, and cleanup.
+## 许可证
 
-## License
-
-[MIT](./LICENSE)
+基于 [iFurySt/open-codex-browser-use](https://github.com/iFurySt/open-codex-browser-use) 修改，Apache 2.0。

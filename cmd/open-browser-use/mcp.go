@@ -63,7 +63,7 @@ with the command "obu mcp".`,
 
 func newMCPServer(options socketOptions) *mcpServer {
 	if options.socketDir == "" {
-		options.socketDir = host.DefaultSocketDir
+		options.socketDir = host.DefaultSocketDir()
 	}
 	if options.timeout == 0 {
 		options.timeout = 10 * time.Second

@@ -304,7 +304,7 @@ func (c *Client) connectLocked() error {
 		}
 		socketPath = record.SocketPath
 	}
-	conn, err := net.DialTimeout("unix", socketPath, c.options.Timeout)
+	conn, err := host.DialSocket(socketPath, c.options.Timeout)
 	if err != nil {
 		return err
 	}

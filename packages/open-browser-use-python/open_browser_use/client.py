@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import struct
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
@@ -12,6 +14,7 @@ JsonObject = dict[str, Any]
 LoadState = Literal["domcontentloaded", "load"]
 NotificationHandler = Callable[[JsonObject], None]
 DEFAULT_NAVIGATION_TIMEOUT = 10.0
+TCP_PORT = 19832
 
 
 @dataclass
@@ -30,11 +33,24 @@ class OpenBrowserUseClient:
 
     def connect(self) -> "OpenBrowserUseClient":
         if self._socket is None:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect(self.socket_path)
-            self._socket = sock
+            if sys.platform == "win32":
+                self._connect_windows()
+            else:
+                self._connect_unix()
         return self
+
+    def _connect_unix(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.socket_path)
+        self._socket = sock
+
+    def _connect_windows(self) -> None:
+        """Connect to the relay TCP listener on localhost."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(("127.0.0.1", TCP_PORT))
+        self._socket = sock
 
     def close(self) -> None:
         if self._socket is not None:
@@ -475,3 +491,4 @@ def _locator_inner_text_expression(selector: str, timeout_ms: int | None) -> str
     await new Promise((resolve) => setTimeout(resolve, 100));
   }}
 }})()"""
+
