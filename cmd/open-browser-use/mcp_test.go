@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -619,10 +620,14 @@ func TestMCPToolCallScreenshotResult(t *testing.T) {
 	serverDone := make(chan error, 1)
 	go func() {
 		defer close(serverDone)
-		for i := 0; i < 3; i++ {
+		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				serverDone <- err
+				if errors.Is(err, net.ErrClosed) {
+					serverDone <- nil
+				} else {
+					serverDone <- err
+				}
 				return
 			}
 			var request map[string]any
@@ -666,8 +671,16 @@ func TestMCPToolCallScreenshotResult(t *testing.T) {
 	if err := server.serve(strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-serverDone; err != nil {
+	if err := listener.Close(); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for mock browser socket server")
 	}
 
 	responses := decodeMCPResponses(t, output.Bytes())

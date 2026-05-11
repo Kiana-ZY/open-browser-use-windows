@@ -237,12 +237,12 @@ func newManifestCommand() *cobra.Command {
 		Use:   "manifest",
 		Short: "Print a Chrome native messaging host manifest",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			manifest, err := nativeManifest(extensionID, hostPath)
 			if err != nil {
 				return err
 			}
-			return writeJSON(manifest)
+			return writeJSONTo(cmd.OutOrStdout(), manifest)
 		},
 	}
 	cmd.Flags().StringVar(&extensionID, "extension-id", defaultChromeExtensionID, "Chrome extension id for allowed_origins")
@@ -739,7 +739,7 @@ func newCallCommand() *cobra.Command {
 		Use:   "call",
 		Short: "Send an unrestricted JSON-RPC request",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if method == "" {
 				return errors.New("call requires --method")
 			}
@@ -747,7 +747,7 @@ func newCallCommand() *cobra.Command {
 			if err := json.Unmarshal([]byte(params), &paramValue); err != nil {
 				return err
 			}
-			return invokeAndWrite(options, method, paramValue)
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, method, paramValue)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -813,8 +813,8 @@ func newSimpleRPCCommand(use string, method string, short string) *cobra.Command
 		Use:   use,
 		Short: short,
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return invokeAndWrite(options, method, map[string]any{})
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, method, map[string]any{})
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -831,7 +831,7 @@ func newHistoryCommand() *cobra.Command {
 		Use:   "history",
 		Short: "Search Chrome history",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			params := map[string]any{"query": query, "limit": limit}
 			if from != "" {
 				params["from"] = from
@@ -845,9 +845,9 @@ func newHistoryCommand() *cobra.Command {
 			}
 			if options.jsonOutput {
 				result, _ := response["result"].([]any)
-				return writeJSON(map[string]any{"items": result})
+				return writeJSONTo(cmd.OutOrStdout(), map[string]any{"items": result})
 			}
-			return writeJSON(response)
+			return writeJSONTo(cmd.OutOrStdout(), response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -865,11 +865,11 @@ func newClaimTabCommand() *cobra.Command {
 		Use:   "claim-tab",
 		Short: "Claim an existing Chrome tab",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if tabID <= 0 {
 				return errors.New("claim-tab requires --tab-id")
 			}
-			return invokeAndWrite(options, "claimUserTab", map[string]any{"tabId": tabID})
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "claimUserTab", map[string]any{"tabId": tabID})
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -884,12 +884,12 @@ func newFinalizeTabsCommand() *cobra.Command {
 		Use:   "finalize-tabs",
 		Short: "Finalize session tabs",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			var keep []any
 			if err := json.Unmarshal([]byte(keepJSON), &keep); err != nil {
 				return fmt.Errorf("finalize-tabs --keep must be a JSON array: %w", err)
 			}
-			return invokeAndWrite(options, "finalizeTabs", map[string]any{"keep": keep})
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "finalizeTabs", map[string]any{"keep": keep})
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -904,11 +904,11 @@ func newNameSessionCommand() *cobra.Command {
 		Use:   "name-session",
 		Short: "Set the session tab group name",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if name == "" {
 				return errors.New("name-session requires --name")
 			}
-			return invokeAndWrite(options, "nameSession", map[string]any{"name": name})
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "nameSession", map[string]any{"name": name})
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -925,7 +925,7 @@ func newCdpCommand() *cobra.Command {
 		Use:   "cdp",
 		Short: "Run a Chrome DevTools Protocol command",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if method == "" {
 				return errors.New("cdp requires --method")
 			}
@@ -938,7 +938,7 @@ func newCdpCommand() *cobra.Command {
 				target["tabId"] = tabID
 				_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
 			}
-			return invokeAndWrite(options, "executeCdp", map[string]any{
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "executeCdp", map[string]any{
 				"target":        target,
 				"method":        method,
 				"commandParams": commandParams,
@@ -961,7 +961,7 @@ func newTextCommand() *cobra.Command {
 		Use:   "text",
 		Short: "Get page text content",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("text requires --tab-id or OBU_TAB_ID env var")
@@ -979,9 +979,9 @@ func newTextCommand() *cobra.Command {
 				return err
 			}
 			if options.jsonOutput {
-				return writeJSON(map[string]any{"text": runtimeEvaluateString(response)})
+				return writeJSONTo(cmd.OutOrStdout(), map[string]any{"text": runtimeEvaluateString(response)})
 			}
-			return writeJSON(response)
+			return writeJSONTo(cmd.OutOrStdout(), response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1000,7 +1000,7 @@ func newPageInfoCommand() *cobra.Command {
 		Use:   "page-info",
 		Short: "Read page title, URL, readyState, and body text",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("page-info requires --tab-id or OBU_TAB_ID env var")
@@ -1020,9 +1020,9 @@ func newPageInfoCommand() *cobra.Command {
 			if options.jsonOutput {
 				result, _ := response["result"].(map[string]any)
 				cdpResult, _ := result["result"].(map[string]any)
-				return writeJSON(cdpResult["value"])
+				return writeJSONTo(cmd.OutOrStdout(), cdpResult["value"])
 			}
-			return writeJSON(response)
+			return writeJSONTo(cmd.OutOrStdout(), response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1042,7 +1042,7 @@ func newScreenshotCommand() *cobra.Command {
 		Use:   "screenshot",
 		Short: "Take a page screenshot",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("screenshot requires --tab-id or OBU_TAB_ID env var")
@@ -1052,9 +1052,9 @@ func newScreenshotCommand() *cobra.Command {
 				return err
 			}
 			if options.jsonOutput {
-				return writeJSON(result)
+				return writeJSONTo(cmd.OutOrStdout(), result)
 			}
-			fmt.Println(result["path"])
+			fmt.Fprintln(cmd.OutOrStdout(), result["path"])
 			return nil
 		},
 	}
@@ -1074,7 +1074,7 @@ func newWaitCommand() *cobra.Command {
 		Use:   "wait",
 		Short: "Wait for page load state",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("wait requires --tab-id or OBU_TAB_ID env var")
@@ -1101,9 +1101,9 @@ func newWaitCommand() *cobra.Command {
 				if val, ok := cdpResult["value"].(string); ok {
 					if val == "complete" || (state == "domcontentloaded" && val == "interactive") {
 						if options.jsonOutput {
-							return writeJSON(map[string]any{"readyState": val})
+							return writeJSONTo(cmd.OutOrStdout(), map[string]any{"readyState": val})
 						}
-						fmt.Println(val)
+						fmt.Fprintln(cmd.OutOrStdout(), val)
 						return nil
 					}
 				}
@@ -1450,7 +1450,7 @@ func newSnapshotCommand() *cobra.Command {
 		Use:   "snapshot",
 		Short: "List interactive elements with ref indices (@1, @2, ...)",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("snapshot requires --tab-id or OBU_TAB_ID env var")
@@ -1471,15 +1471,16 @@ func newSnapshotCommand() *cobra.Command {
 			_ = saveSnapshot(options.sessionID, items)
 
 			if options.jsonOutput {
-				return writeJSON(map[string]any{"items": items})
+				return writeJSONTo(cmd.OutOrStdout(), map[string]any{"items": items})
 			}
+			writer := cmd.OutOrStdout()
 			for _, item := range items {
 				idx := int(item["index"].(float64))
-				fmt.Printf("@%d %s", idx, item["tag"])
+				fmt.Fprintf(writer, "@%d %s", idx, item["tag"])
 				if t, _ := item["text"].(string); t != "" {
-					fmt.Printf(" %q", t)
+					fmt.Fprintf(writer, " %q", t)
 				}
-				fmt.Println()
+				fmt.Fprintln(writer)
 			}
 			return nil
 		},
@@ -1497,7 +1498,7 @@ func newClickCommand() *cobra.Command {
 		Use:   "click @N",
 		Short: "Click an element by its snapshot ref (e.g. click @3)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("click requires --tab-id or OBU_TAB_ID env var")
@@ -1517,7 +1518,9 @@ func newClickCommand() *cobra.Command {
 			}
 			result, err := interactionResultFromResponse("click", response)
 			if options.jsonOutput {
-				_ = writeJSON(result)
+				if writeErr := writeJSONTo(cmd.OutOrStdout(), result); writeErr != nil && err == nil {
+					return writeErr
+				}
 			}
 			return err
 		},
@@ -1534,7 +1537,7 @@ func newFillCommand() *cobra.Command {
 		Use:   "fill @N TEXT",
 		Short: "Type text into an input by its snapshot ref (e.g. fill @5 hello)",
 		Args:  cobra.MinimumNArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			tabID = envTabID(tabID)
 			if tabID <= 0 {
 				return errors.New("fill requires --tab-id or OBU_TAB_ID env var")
@@ -1555,7 +1558,9 @@ func newFillCommand() *cobra.Command {
 			}
 			result, err := interactionResultFromResponse("fill", response)
 			if options.jsonOutput {
-				_ = writeJSON(result)
+				if writeErr := writeJSONTo(cmd.OutOrStdout(), result); writeErr != nil && err == nil {
+					return writeErr
+				}
 			}
 			return err
 		},
@@ -1575,11 +1580,11 @@ func newMoveMouseCommand() *cobra.Command {
 		Use:   "move-mouse",
 		Short: "Move the browser cursor overlay",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if tabID <= 0 {
 				return errors.New("move-mouse requires --tab-id")
 			}
-			return invokeAndWrite(options, "moveMouse", map[string]any{
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "moveMouse", map[string]any{
 				"tabId":          tabID,
 				"x":              x,
 				"y":              y,
@@ -1602,11 +1607,11 @@ func newWaitFileChooserCommand() *cobra.Command {
 		Use:   "wait-file-chooser",
 		Short: "Wait for a browser session tab to open a file chooser",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if tabID <= 0 {
 				return errors.New("wait-file-chooser requires --tab-id")
 			}
-			return invokeAndWrite(options, "waitForFileChooser", map[string]any{
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "waitForFileChooser", map[string]any{
 				"tabId":     tabID,
 				"timeoutMs": int(options.timeout.Milliseconds()),
 			})
@@ -1625,14 +1630,14 @@ func newSetFileChooserFilesCommand() *cobra.Command {
 		Use:   "set-file-chooser-files",
 		Short: "Set files for an intercepted browser file chooser",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fileChooserID == "" {
 				return errors.New("set-file-chooser-files requires --file-chooser-id")
 			}
 			if len(files) == 0 {
 				return errors.New("set-file-chooser-files requires at least one --file")
 			}
-			return invokeAndWrite(options, "setFileChooserFiles", map[string]any{
+			return invokeAndWriteTo(cmd.OutOrStdout(), options, "setFileChooserFiles", map[string]any{
 				"fileChooserId": fileChooserID,
 				"files":         files,
 			})
@@ -1651,7 +1656,7 @@ func newOpenTabCommand() *cobra.Command {
 		Use:   "open-tab",
 		Short: "Open a new browser session tab",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			tabResponse, err := invokeWithOptions(options, "createTab", map[string]any{})
 			if err != nil {
 				return err
@@ -1674,7 +1679,7 @@ func newOpenTabCommand() *cobra.Command {
 				}
 				output["navigate"] = navigateResponse["result"]
 			}
-			return writeJSON(output)
+			return writeJSONTo(cmd.OutOrStdout(), output)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1690,7 +1695,7 @@ func newNavigateCommand() *cobra.Command {
 		Use:   "navigate",
 		Short: "Navigate a browser session tab",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if tabID <= 0 {
 				return errors.New("navigate requires --tab-id")
 			}
@@ -1708,9 +1713,9 @@ func newNavigateCommand() *cobra.Command {
 			}
 			if options.jsonOutput {
 				result, _ := response["result"].(map[string]any)
-				return writeJSON(map[string]any{"navigate": result})
+				return writeJSONTo(cmd.OutOrStdout(), map[string]any{"navigate": result})
 			}
-			return writeJSON(response)
+			return writeJSONTo(cmd.OutOrStdout(), response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -2505,15 +2510,19 @@ func runtimeEvaluateMap(response map[string]any) (map[string]any, error) {
 }
 
 func invokeAndWrite(options socketOptions, method string, params map[string]any) error {
+	return invokeAndWriteTo(os.Stdout, options, method, params)
+}
+
+func invokeAndWriteTo(writer io.Writer, options socketOptions, method string, params map[string]any) error {
 	response, err := invokeWithOptions(options, method, params)
 	if err != nil {
 		return err
 	}
 	if options.jsonOutput {
 		result, _ := response["result"]
-		return writeJSON(normalizeJSONResult(method, result))
+		return writeJSONTo(writer, normalizeJSONResult(method, result))
 	}
-	return writeJSON(response)
+	return writeJSONTo(writer, response)
 }
 
 func normalizeJSONResult(method string, result any) any {
