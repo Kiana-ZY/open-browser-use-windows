@@ -93,6 +93,9 @@ func newRootCommand() *cobra.Command {
 		newTextCommand(),
 		newScreenshotCommand(),
 		newWaitCommand(),
+		newSnapshotCommand(),
+		newClickCommand(),
+		newFillCommand(),
 		newMoveMouseCommand(),
 		newWaitFileChooserCommand(),
 		newSetFileChooserFilesCommand(),
@@ -1058,6 +1061,176 @@ func newWaitCommand() *cobra.Command {
 	addSocketFlags(cmd, &options)
 	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
 	cmd.Flags().StringVar(&state, "state", "load", "load state: load or domcontentloaded")
+	return cmd
+}
+
+func snapshotJS() string {
+	return `(() => {
+  if (typeof window.__obu_refs !== 'undefined') return window.__obu_refs;
+  const els = document.querySelectorAll('button, a, input, select, textarea, [role=button], [role=textbox], [role=combobox]');
+  const results = [];
+  let idx = 0;
+  for (const el of els) {
+    if (el.offsetParent === null && el.tagName !== 'SELECT') continue;
+    const tag = el.tagName.toLowerCase();
+    const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+    const id = el.id || '';
+    const type = (el.type || '').toLowerCase();
+    const href = el.href || '';
+    const selector = id ? '#' + CSS.escape(id) : '';
+    el.setAttribute('data-obu-ref', String(idx + 1));
+    results.push({ index: idx + 1, tag, text, type, href, selector });
+    idx++;
+    if (idx >= 100) break;
+  }
+  window.__obu_refs = results;
+  return results;
+})()`
+}
+
+func snapshotDir() string {
+	return filepath.Join(os.TempDir(), "obu-snapshots")
+}
+
+func snapshotPath(sessionID string) string {
+	return filepath.Join(snapshotDir(), sessionID+".json")
+}
+
+func saveSnapshot(sessionID string, data []map[string]any) error {
+	dir := snapshotDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(snapshotPath(sessionID), payload, 0o600)
+}
+
+func loadSnapshot(sessionID string) ([]map[string]any, error) {
+	payload, err := os.ReadFile(snapshotPath(sessionID))
+	if err != nil {
+		return nil, err
+	}
+	var data []map[string]any
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func newSnapshotCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	cmd := &cobra.Command{
+		Use:   "snapshot",
+		Short: "List interactive elements with ref indices (@1, @2, ...)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("snapshot requires --tab-id or OBU_TAB_ID env var")
+			}
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+				"target":        map[string]any{"tabId": tabID},
+				"method":        "Runtime.evaluate",
+				"commandParams": map[string]any{"expression": snapshotJS(), "returnByValue": true},
+			})
+			if err != nil {
+				return err
+			}
+			result, _ := response["result"].(map[string]any)
+			cdpResult, _ := result["result"].(map[string]any)
+			value, _ := cdpResult["value"]
+			elements, _ := value.([]any)
+			if elements == nil {
+				return errors.New("snapshot returned no elements")
+			}
+			var items []map[string]any
+			for _, el := range elements {
+				items = append(items, el.(map[string]any))
+			}
+			_ = saveSnapshot(options.sessionID, items)
+
+			if options.jsonOutput {
+				return writeJSON(items)
+			}
+			for _, item := range items {
+				idx := int(item["index"].(float64))
+				fmt.Printf("@%d %s", idx, item["tag"])
+				if t, _ := item["text"].(string); t != "" {
+					fmt.Printf(" %q", t)
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	return cmd
+}
+
+func newClickCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	cmd := &cobra.Command{
+		Use:   "click @N",
+		Short: "Click an element by its snapshot ref (e.g. click @3)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("click requires --tab-id or OBU_TAB_ID env var")
+			}
+			ref := strings.TrimPrefix(args[0], "@")
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			return invokeAndWrite(options, "executeCdp", map[string]any{
+				"target": map[string]any{"tabId": tabID},
+				"method": "Runtime.evaluate",
+				"commandParams": map[string]any{
+					"expression":    fmt.Sprintf(`document.querySelector('[data-obu-ref="%s"]')?.click()`, ref),
+					"returnByValue": true,
+				},
+			})
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	return cmd
+}
+
+func newFillCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	cmd := &cobra.Command{
+		Use:   "fill @N TEXT",
+		Short: "Type text into an input by its snapshot ref (e.g. fill @5 hello)",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("fill requires --tab-id or OBU_TAB_ID env var")
+			}
+			ref := strings.TrimPrefix(args[0], "@")
+			text := strings.Join(args[1:], " ")
+			escaped := strings.ReplaceAll(text, "\\", "\\\\")
+			escaped = strings.ReplaceAll(escaped, "'", "\\'")
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			return invokeAndWrite(options, "executeCdp", map[string]any{
+				"target": map[string]any{"tabId": tabID},
+				"method": "Runtime.evaluate",
+				"commandParams": map[string]any{
+					"expression":    fmt.Sprintf(`(()=>{const el=document.querySelector('[data-obu-ref="%s"]');if(el){el.focus();el.value='%s';el.dispatchEvent(new Event('input',{bubbles:true}));return true;}return false})()`, ref, escaped),
+					"returnByValue": true,
+				},
+			})
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
 	return cmd
 }
 
