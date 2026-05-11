@@ -90,6 +90,9 @@ func newRootCommand() *cobra.Command {
 		newFinalizeTabsCommand(),
 		newNameSessionCommand(),
 		newCdpCommand(),
+		newTextCommand(),
+		newScreenshotCommand(),
+		newWaitCommand(),
 		newMoveMouseCommand(),
 		newWaitFileChooserCommand(),
 		newSetFileChooserFilesCommand(),
@@ -704,16 +707,22 @@ type socketOptions struct {
 	socketDir  string
 	timeout    time.Duration
 	sessionID  string
+	jsonOutput bool
 }
 
 func addSocketFlags(cmd *cobra.Command, options *socketOptions) {
 	if options.sessionID == "" {
-		options.sessionID = defaultCLISessionID
+		if env := os.Getenv("OBU_SESSION_ID"); env != "" {
+			options.sessionID = env
+		} else {
+			options.sessionID = defaultCLISessionID
+		}
 	}
-	cmd.Flags().StringVar(&options.socketPath, "socket", "", "open-browser-use Unix socket path")
+	cmd.Flags().StringVar(&options.socketPath, "socket", "", "Unix socket or TCP relay path")
 	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir(), "directory containing active socket registry")
 	cmd.Flags().DurationVar(&options.timeout, "timeout", 10*time.Second, "request timeout")
-	cmd.Flags().StringVar(&options.sessionID, "session-id", options.sessionID, "browser session id used for tab grouping and cleanup")
+	cmd.Flags().StringVar(&options.sessionID, "session-id", options.sessionID, "browser session id (env: OBU_SESSION_ID)")
+	cmd.Flags().BoolVar(&options.jsonOutput, "json", false, "output raw result value only, no JSON-RPC wrapper")
 }
 
 func newCallCommand() *cobra.Command {
@@ -926,6 +935,129 @@ func newCdpCommand() *cobra.Command {
 	cmd.Flags().IntVar(&tabID, "tab-id", 0, "optional tab id target")
 	cmd.Flags().StringVar(&method, "method", "", "Chrome DevTools Protocol method")
 	cmd.Flags().StringVar(&commandParamsJSON, "params", "{}", "Chrome DevTools Protocol command params")
+	return cmd
+}
+
+func newTextCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	cmd := &cobra.Command{
+		Use:   "text",
+		Short: "Get page text content",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("text requires --tab-id or OBU_TAB_ID env var")
+			}
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			return invokeAndWrite(options, "executeCdp", map[string]any{
+				"target": map[string]any{"tabId": tabID},
+				"method": "Runtime.evaluate",
+				"commandParams": map[string]any{
+					"expression":    "document.body?.innerText ?? ''",
+					"returnByValue": true,
+				},
+			})
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	return cmd
+}
+
+func newScreenshotCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	var output string
+	cmd := &cobra.Command{
+		Use:   "screenshot",
+		Short: "Take a page screenshot",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("screenshot requires --tab-id or OBU_TAB_ID env var")
+			}
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+				"target":        map[string]any{"tabId": tabID},
+				"method":        "Page.captureScreenshot",
+				"commandParams": map[string]any{"format": "png"},
+			})
+			if err != nil {
+				return err
+			}
+			result, _ := response["result"].(map[string]any)
+			data, _ := result["data"].(string)
+			if data == "" {
+				return errors.New("screenshot returned no data")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(data)
+			if err != nil {
+				return err
+			}
+			path := output
+			if path == "" {
+				path = fmt.Sprintf("screenshot-%d.png", time.Now().Unix())
+			}
+			return os.WriteFile(path, decoded, 0o644)
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	cmd.Flags().StringVar(&output, "output", "", "output file path")
+	return cmd
+}
+
+func newWaitCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	var state string
+	cmd := &cobra.Command{
+		Use:   "wait",
+		Short: "Wait for page load state",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("wait requires --tab-id or OBU_TAB_ID env var")
+			}
+			if state == "" {
+				state = "load"
+			}
+			deadline := time.Now().Add(options.timeout)
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			for {
+				response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+					"target": map[string]any{"tabId": tabID},
+					"method": "Runtime.evaluate",
+					"commandParams": map[string]any{
+						"expression":    "document.readyState",
+						"returnByValue": true,
+					},
+				})
+				if err != nil {
+					return err
+				}
+				result, _ := response["result"].(map[string]any)
+				cdpResult, _ := result["result"].(map[string]any)
+				if val, ok := cdpResult["value"].(string); ok {
+					if val == "complete" || (state == "domcontentloaded" && val == "interactive") {
+						fmt.Println(val)
+						return nil
+					}
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("timed out waiting for %s in tab %d", state, tabID)
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	cmd.Flags().StringVar(&state, "state", "load", "load state: load or domcontentloaded")
 	return cmd
 }
 
@@ -1628,6 +1760,10 @@ func invokeAndWrite(options socketOptions, method string, params map[string]any)
 	if err != nil {
 		return err
 	}
+	if options.jsonOutput {
+		result, _ := response["result"]
+		return writeJSON(result)
+	}
 	return writeJSON(response)
 }
 
@@ -1662,7 +1798,11 @@ func invoke(socketPath string, socketDir string, method string, params map[strin
 
 func applySessionDefaults(params map[string]any, sessionID string) {
 	if sessionID == "" {
-		sessionID = defaultCLISessionID
+		if env := os.Getenv("OBU_SESSION_ID"); env != "" {
+			sessionID = env
+		} else {
+			sessionID = defaultCLISessionID
+		}
 	}
 	if _, ok := params["session_id"]; !ok {
 		params["session_id"] = sessionID
@@ -1670,6 +1810,18 @@ func applySessionDefaults(params map[string]any, sessionID string) {
 	if _, ok := params["turn_id"]; !ok {
 		params["turn_id"] = fmt.Sprintf("%s-%d", sessionID, time.Now().UnixNano())
 	}
+}
+
+func envTabID(flagTabID int) int {
+	if flagTabID > 0 {
+		return flagTabID
+	}
+	if env := os.Getenv("OBU_TAB_ID"); env != "" {
+		if id, err := strconv.Atoi(env); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
 }
 
 func dialBrowserSocket(socketPath string, socketDir string, timeout time.Duration) (net.Conn, error) {

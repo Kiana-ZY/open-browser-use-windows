@@ -199,11 +199,12 @@ class OpenBrowserUseClient:
 
 
 def connect_open_browser_use(
-    socket_path: str,
+    socket_path: str = "",
     session_id: str = "open-browser-use-python",
     turn_id: str | None = None,
     timeout: float = 10.0,
 ) -> "OpenBrowserUseBrowser":
+    """Connect to the OBU relay. On Windows, socket_path is ignored (auto TCP)."""
     browser = OpenBrowserUseBrowser(
         OpenBrowserUseClient(
             socket_path=socket_path,
@@ -214,6 +215,14 @@ def connect_open_browser_use(
     )
     browser.connect()
     return browser
+
+
+def connect(
+    session_id: str = "open-browser-use-python",
+    timeout: float = 10.0,
+) -> "OpenBrowserUseBrowser":
+    """Shorthand: connect to the OBU relay with auto-discovery."""
+    return connect_open_browser_use("", session_id=session_id, timeout=timeout)
 
 
 class OpenBrowserUseBrowser:
@@ -227,6 +236,12 @@ class OpenBrowserUseBrowser:
 
     def close(self) -> None:
         self.client.close()
+
+    def __enter__(self) -> "OpenBrowserUseBrowser":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
 
     def new_tab(
         self,
@@ -287,6 +302,24 @@ class OpenBrowserUseTab:
         if timeout_ms < 0:
             raise ValueError("timeout_ms must be non-negative")
         time.sleep(timeout_ms / 1000)
+
+    def screenshot(self, path: str | None = None) -> Any:
+        """Take a page screenshot. If path is provided, saves to file."""
+        import base64
+        result = self.browser.cdp.call(self.id, "Page.captureScreenshot")
+        if isinstance(result, dict) and "data" in result:
+            if path:
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(result["data"]))
+            return result["data"]
+        return result
+
+    def text(self, selector: str = "body") -> str:
+        """Get innerText of an element. Defaults to full page body text."""
+        value = self.browser.cdp.evaluate(
+            self.id, f"document.querySelector({json.dumps(selector)})?.innerText ?? ''"
+        )
+        return "" if value is None else str(value)
 
     def locator(self, selector: str) -> "OpenBrowserUseLocator":
         return OpenBrowserUseLocator(self, selector)
