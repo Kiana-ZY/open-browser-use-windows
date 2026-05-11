@@ -15,13 +15,14 @@ Open Browser Use supports Chrome and Edge. On Windows, pass `--browser edge` to 
 
 ## Core Workflow
 
-1. Check setup with `open-browser-use ping` or `obu ping`. If it fails because setup is missing, read [references/installation.md](references/installation.md).
-2. Choose a unique browser session id for the current agent task before opening or claiming tabs. Prefer the surrounding runtime's conversation/session id when available; otherwise create a short unique id such as `obu-<task-slug>-<timestamp>`. Reuse that same id for every Open Browser Use command in this task.
+1. Check setup with `obu ping`. If it fails because setup is missing, read [references/installation.md](references/installation.md).
+2. Set `OBU_SESSION_ID` env var for the current agent task. Use a unique id such as `obu-<task-slug>-<timestamp>`. All subsequent commands pick it up automatically.
 3. Name the current browser task group before opening or claiming tabs. Use a short task label followed by ` - OBU`; if no better task label is available, use `Task - OBU`.
-4. Use the CLI for simple inspection or one-shot actions: `info`, `tabs`, `user-tabs`, `history`, `open-tab`, `navigate`, `cdp`, and `call`.
-5. Use the JavaScript, Python, or Go SDK for multi-step workflows, event subscriptions, or when the surrounding agent runtime already runs code. Read [references/sdk-and-protocol.md](references/sdk-and-protocol.md).
-6. Before ending browser work, release or keep session tabs with `open-browser-use finalize-tabs --session-id <id> --keep "<json-array>"`, the MCP `finalize_tabs` tool, or the SDK `finalizeTabs` / `finalize_tabs` / `FinalizeTabs` method.
-7. If communication fails after setup, read [references/troubleshooting.md](references/troubleshooting.md).
+4. Use `obu user-tabs` to list tabs, `obu open-tab --url <url>` to open new ones, `obu claim-tab --tab-id <id>` to take over existing ones.
+5. After opening/claiming a tab, set `OBU_TAB_ID=<id>` env var. Then use `obu text --json`, `obu screenshot --output <path>`, `obu wait`, or `obu cdp` without repeating `--tab-id`.
+6. Use `obu run` for multi-step action plans, or the Python/Go SDK for event-driven workflows. Read [references/sdk-and-protocol.md](references/sdk-and-protocol.md).
+7. Before ending browser work, finalize tabs with `obu finalize-tabs --keep "<json-array>"`.
+8. If communication fails, read [references/troubleshooting.md](references/troubleshooting.md).
 
 ## Operating Rules
 
@@ -31,43 +32,61 @@ Open Browser Use supports Chrome and Edge. On Windows, pass `--browser edge` to 
 - Do not guess tab ids. List tabs first, then use ids returned by `tabs`, `user-tabs`, `open-tab`, or SDK calls.
 - Prefer `claim-tab` / `claimUserTab` for existing user tabs. Claiming should be based on the current `user-tabs` result and visible evidence such as URL, title, recency, or group.
 - Use `--socket` only when the user or runtime provides an explicit socket. Otherwise let the CLI and SDKs discover the active socket registry.
-- Do not rely on the CLI fallback session `obu-cli` for agent tasks. Always pass a task-unique `--session-id` to CLI and MCP commands, or set `sessionId` / `session_id` / `SessionID` in SDK clients. The fallback exists for quick manual use and can reuse stale task groups across unrelated agent sessions.
+- Set `OBU_SESSION_ID` env var at the start of a task. All commands pick it up automatically — no need to repeat `--session-id` on every call.
+- Set `OBU_TAB_ID` env var after opening or claiming a tab. Subsequent `text`, `screenshot`, `wait`, `cdp` commands use it automatically.
 - Direct CLI subcommands and `open-browser-use run` can share the same browser session only when they use the same explicit `--session-id`. Finalize that same session before ending browser work.
 - Use `call --method <method> --params "<json>"` only when no safer convenience command or SDK wrapper exists.
+- Add `--json` to any command for machine-readable output (result value only, no JSON-RPC wrapper). Useful for piping and scripting.
 
 ## Common CLI Actions
+
+Set environment variables once per session, then commands are terse:
 
 On Windows (CMD):
 
 ```cmd
 SET OBU_SESSION_ID=obu-task-20260511
-obu ping --session-id %OBU_SESSION_ID%
-obu info --session-id %OBU_SESSION_ID%
-obu name-session --session-id %OBU_SESSION_ID% --name "Task - OBU"
-obu tabs --session-id %OBU_SESSION_ID%
-obu user-tabs --session-id %OBU_SESSION_ID%
-obu history --session-id %OBU_SESSION_ID% --query "example" --limit 20
-obu open-tab --session-id %OBU_SESSION_ID% --url https://example.com
-obu navigate --session-id %OBU_SESSION_ID% --tab-id <tab-id> --url https://example.com
-obu cdp --session-id %OBU_SESSION_ID% --tab-id <tab-id> --method Runtime.evaluate --params "{\"expression\":\"document.title\"}"
-obu finalize-tabs --session-id %OBU_SESSION_ID% --keep "[]"
+obu ping
+obu info
+obu name-session --name "Task - OBU"
+obu tabs
+obu user-tabs
+obu history --query "example" --limit 20
+obu open-tab --url https://example.com
+SET OBU_TAB_ID=<returned-tab-id>
+obu text --json
+obu screenshot --output page.png
+obu wait --state load
+obu cdp --method Runtime.evaluate --params "{\"expression\":\"document.title\"}"
+obu finalize-tabs --keep "[]"
 ```
 
 On Unix (macOS/Linux):
 
 ```sh
 export OBU_SESSION_ID="obu-task-$(date +%Y%m%d%H%M%S)"
-obu ping --session-id "$OBU_SESSION_ID"
-obu info --session-id "$OBU_SESSION_ID"
-obu name-session --session-id "$OBU_SESSION_ID" --name "Task - OBU"
-obu tabs --session-id "$OBU_SESSION_ID"
-obu user-tabs --session-id "$OBU_SESSION_ID"
-obu history --session-id "$OBU_SESSION_ID" --query "example" --limit 20
-obu open-tab --session-id "$OBU_SESSION_ID" --url https://example.com
-obu navigate --session-id "$OBU_SESSION_ID" --tab-id <tab-id> --url https://example.com
-obu cdp --session-id "$OBU_SESSION_ID" --tab-id <tab-id> --method Runtime.evaluate --params '{"expression":"document.title"}'
-obu finalize-tabs --session-id "$OBU_SESSION_ID" --keep '[]'
+obu ping
+obu info
+obu name-session --name "Task - OBU"
+obu tabs
+obu user-tabs
+obu history --query "example" --limit 20
+obu open-tab --url https://example.com
+export OBU_TAB_ID=<returned-tab-id>
+obu text --json
+obu screenshot --output page.png
+obu wait --state load
+obu cdp --method Runtime.evaluate --params '{"expression":"document.title"}'
+obu finalize-tabs --keep '[]'
 ```
+
+### Convenience Commands
+
+| Command | Description |
+|---------|-------------|
+| `obu text --json` | Get page body text (respects OBU_TAB_ID) |
+| `obu screenshot --output file.png` | Screenshot to file |
+| `obu wait --state load` | Wait for page readyState |
 
 For CLI-level orchestration without writing SDK code, use a line-oriented action plan:
 
