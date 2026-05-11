@@ -1,4 +1,4 @@
-module github.com/ifuryst/open-codex-browser-use
+module github.com/Kiana-ZY/open-browser-use-windows
 
 go 1.25.10
 

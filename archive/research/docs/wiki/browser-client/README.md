@@ -27,6 +27,9 @@ client runtime.
 - `automation/command-surface.md`: observed command handler registry by area.
 - `security/policy-and-permissions.md`: capability checks, site policy, and
   user-origin permission prompts.
+- `notes/open-browser-use-vs-codex-browser-use.md`: practical comparison
+  between this repository's OBU route and Codex Browser Use, including token,
+  interaction, safety, and product-surface tradeoffs.
 - `notes/open-questions.md`: unresolved or evidence-light questions for future
   analysis.
 

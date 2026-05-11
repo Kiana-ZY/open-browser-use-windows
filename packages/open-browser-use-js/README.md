@@ -1,14 +1,16 @@
 # Open Browser Use JavaScript SDK
 
-JavaScript/TypeScript client for controlling a real Chrome profile through
-Open Browser Use. The SDK keeps the low-level JSON-RPC/CDP surface available and
-also provides higher-level browser/tab helpers for common agent workflows.
+JavaScript/TypeScript client for controlling a real Chrome or Microsoft Edge
+profile through Open Browser Use for Windows. The SDK keeps the low-level
+JSON-RPC/CDP surface available and also provides higher-level browser/tab
+helpers for common agent workflows.
 
 ## Prerequisites
 
-- The `open-browser-use` CLI and Chrome extension are installed and connected.
+- The `open-browser-use` CLI and Chrome/Edge extension are installed and connected.
 - `open-browser-use ping` returns `"pong"`.
-- The native host has written an active socket registry at
+- On Windows, the native host relay is available at `127.0.0.1:19832`.
+- On Unix-like systems, the native host has written an active socket registry at
   `/tmp/open-browser-use/active.json`.
 
 ```sh
@@ -28,15 +30,10 @@ Use `connectOpenBrowserUse` when you want a Playwright-like flow in a normal
 Node runtime.
 
 ```js
-import { readFile } from "node:fs/promises";
 import { connectOpenBrowserUse } from "open-browser-use-sdk";
 
-const registry = JSON.parse(
-  await readFile("/tmp/open-browser-use/active.json", "utf8")
-);
-
 const browser = await connectOpenBrowserUse({
-  socketPath: registry.socketPath,
+  socketPath: "127.0.0.1:19832",
   sessionId: "github-issue-scan",
   turnId: `turn-${Date.now()}`,
   timeoutMs: 20000,
@@ -49,7 +46,7 @@ try {
 
   tab = await browser.newTab();
 
-  await tab.goto("https://github.com/iFurySt/open-codex-computer-use/issues", {
+  await tab.goto("https://github.com/Kiana-ZY/open-browser-use-windows/issues", {
     waitUntil: "domcontentloaded",
     timeoutMs: 15000,
   });
@@ -63,7 +60,7 @@ try {
   const relevant = snapshot
     .split("\n")
     .filter((line) =>
-      /Open|Closed|Issues|issue|No results|open-codex-computer-use|Pull requests|Starred/.test(line)
+      /Open|Closed|Issues|issue|No results|open-browser-use-windows|Pull requests|Starred/.test(line)
     );
 
   console.log(relevant.slice(0, 160).join("\n"));
@@ -82,6 +79,22 @@ const text = await tab.domSnapshot();
 const value = await tab.evaluate("document.title");
 ```
 
+For agent-facing structured reads and interactions, use the helpers that mirror
+CLI `--json` and MCP `structuredContent` shapes:
+
+```js
+const info = await tab.pageInfo({ selector: "main", maxChars: 2000 });
+const textResult = await tab.text({ maxChars: 2000 });
+const snapshot = await tab.snapshot({ limit: 50 });
+const shot = await tab.screenshot({ selector: "main" });
+
+await tab.click("@1");
+await tab.fill("@2", "hello");
+```
+
+`pageInfo`, `text`, `snapshot`, `screenshot`, `click`, and `fill` are also
+available through `tab.playwright`.
+
 ## Multi-Tab Workflows
 
 For multiple pages, create tabs first, then run navigation and extraction in
@@ -90,9 +103,9 @@ page work.
 
 ```js
 const targets = [
-  ["repo", "https://github.com/iFurySt/open-codex-computer-use"],
-  ["issues", "https://github.com/iFurySt/open-codex-computer-use/issues"],
-  ["pulls", "https://github.com/iFurySt/open-codex-computer-use/pulls"],
+  ["repo", "https://github.com/Kiana-ZY/open-browser-use-windows"],
+  ["issues", "https://github.com/Kiana-ZY/open-browser-use-windows/issues"],
+  ["pulls", "https://github.com/Kiana-ZY/open-browser-use-windows/pulls"],
 ];
 
 const tabs = [];
@@ -121,15 +134,10 @@ Use `OpenBrowserUseClient` when you need direct Browser Use JSON-RPC methods or
 raw CDP commands.
 
 ```js
-import { readFile } from "node:fs/promises";
 import { OpenBrowserUseClient } from "open-browser-use-sdk";
 
-const { socketPath } = JSON.parse(
-  await readFile("/tmp/open-browser-use/active.json", "utf8")
-);
-
 const client = new OpenBrowserUseClient({
-  socketPath,
+  socketPath: "127.0.0.1:19832",
   sessionId: "raw-cdp-example",
 });
 
@@ -191,6 +199,7 @@ unsubscribe();
 
 - Browser/session: `getInfo`, `nameSession`, `turnEnded`
 - Tabs: `createTab`, `getTabs`, `getUserTabs`, `claimUserTab`, `finalizeTabs`
+- Tab helpers: `pageInfo`, `text`, `snapshot`, `screenshot`, `click`, `fill`
 - CDP: `attach`, `detach`, `executeCdp`, `request`
 - Input: `moveMouse`
 - File chooser: `waitForFileChooser`, `setFileChooserFiles`
@@ -220,9 +229,10 @@ await browser.client.finalizeTabs([{ tabId: tab.id, status: "handoff" }]);
 
 ## Notes
 
-- The browser is the user's real Chrome profile. Do not inspect unrelated data.
+- The browser is the user's real Chrome or Edge profile. Do not inspect
+  unrelated data.
 - The SDK does not include Codex-specific site policy or approval prompts; add
   policy in your own runtime if needed.
 - If connection fails, run `open-browser-use ping` and `open-browser-use info`.
-- If there is no active socket, open Chrome with the extension enabled or rerun
-  setup according to the Open Browser Use installation guide.
+- If there is no active relay, open Chrome or Edge with the extension enabled
+  or rerun setup according to the Open Browser Use installation guide.

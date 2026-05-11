@@ -8,10 +8,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 )
 
 func TestEncodeFrame(t *testing.T) {
@@ -200,6 +201,115 @@ func TestHighLevelBrowserTabHelpers(t *testing.T) {
 	}
 	if _, err := browser.Client.FinalizeTabs(nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStructuredReadScreenshotAndInteractionHelpers(t *testing.T) {
+	pngData := "cG5n"
+	socketPath, closeServer := startSDKServer(t, func(conn net.Conn) {
+		var calls [][2]string
+		for i := 0; i < 7; i++ {
+			request := readRequest(t, conn)
+			if request == nil {
+				break
+			}
+			method, _ := request["method"].(string)
+			params, _ := request["params"].(map[string]any)
+			cdpMethod, _ := params["method"].(string)
+			commandParams, _ := params["commandParams"].(map[string]any)
+			expression, _ := commandParams["expression"].(string)
+			calls = append(calls, [2]string{method, cdpMethod})
+			result := map[string]any{}
+			switch {
+			case method == "executeCdp" && cdpMethod == "Runtime.evaluate" && strings.Contains(expression, "document.title"):
+				result = map[string]any{"result": map[string]any{"value": map[string]any{
+					"title":      "Example",
+					"url":        "https://example.test",
+					"readyState": "complete",
+					"text":       "Hello",
+				}}}
+			case method == "executeCdp" && cdpMethod == "Runtime.evaluate" && strings.Contains(expression, "__obu_refs"):
+				result = map[string]any{"result": map[string]any{"value": []any{
+					map[string]any{"index": float64(1), "tag": "button", "text": "Save", "type": "", "href": "", "selector": "#save"},
+				}}}
+			case method == "executeCdp" && cdpMethod == "Runtime.evaluate" && strings.Contains(expression, `action: "click"`):
+				result = map[string]any{"result": map[string]any{"value": map[string]any{
+					"ok": true, "ref": "1", "action": "click", "tag": "button", "text": "Save",
+				}}}
+			case method == "executeCdp" && cdpMethod == "Runtime.evaluate" && strings.Contains(expression, `action: "fill"`):
+				result = map[string]any{"result": map[string]any{"value": map[string]any{
+					"ok": true, "ref": "2", "action": "fill", "tag": "input", "text": "hello", "valueLength": float64(5),
+				}}}
+			case method == "executeCdp" && cdpMethod == "Runtime.evaluate":
+				result = map[string]any{"result": map[string]any{"value": "Hello"}}
+			case method == "executeCdp" && cdpMethod == "Page.captureScreenshot":
+				result = map[string]any{"data": pngData}
+			}
+			writeResponse(t, conn, request["id"], result)
+		}
+		expected := [][2]string{
+			{"attach", ""},
+			{"executeCdp", "Runtime.evaluate"},
+			{"executeCdp", "Runtime.evaluate"},
+			{"executeCdp", "Runtime.evaluate"},
+			{"executeCdp", "Page.captureScreenshot"},
+			{"executeCdp", "Runtime.evaluate"},
+			{"executeCdp", "Runtime.evaluate"},
+		}
+		if !reflect.DeepEqual(calls, expected) {
+			t.Errorf("unexpected calls: %#v", calls)
+		}
+	})
+	defer closeServer()
+
+	browser, err := ConnectOpenBrowserUse(Options{SocketPath: socketPath, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browser.Close()
+	tab := browser.Tab(123)
+
+	pageInfo, err := tab.PageInfo(TextOptions{MaxChars: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageInfo.Title != "Example" || pageInfo.Text != "Hello" {
+		t.Fatalf("unexpected page info: %#v", pageInfo)
+	}
+	text, err := tab.Text(TextOptions{Selector: "main", MaxChars: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text.Text != "Hello" {
+		t.Fatalf("unexpected text result: %#v", text)
+	}
+	snapshot, err := tab.Snapshot(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Items) != 1 || snapshot.Items[0].Text != "Save" {
+		t.Fatalf("unexpected snapshot: %#v", snapshot)
+	}
+	screenshot, err := tab.Screenshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if screenshot.Data != pngData || screenshot.Bytes != 3 || screenshot.Format != "png" || screenshot.TabID != 123 {
+		t.Fatalf("unexpected screenshot: %#v", screenshot)
+	}
+	click, err := tab.Click("@1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if click.Action != "click" {
+		t.Fatalf("unexpected click: %#v", click)
+	}
+	fill, err := tab.Fill("@2", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fill.ValueLength != 5 {
+		t.Fatalf("unexpected fill: %#v", fill)
 	}
 }
 

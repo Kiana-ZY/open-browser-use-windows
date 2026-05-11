@@ -1,7 +1,7 @@
 {
   "name": "open-browser-use-sdk",
-  "version": "0.1.26",
-  "description": "JavaScript/TypeScript SDK for Open Browser Use.",
+  "version": "0.1.29",
+  "description": "JavaScript/TypeScript SDK for Open Browser Use for Windows.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -23,13 +23,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iFurySt/open-codex-browser-use.git",
+    "url": "git+https://github.com/Kiana-ZY/open-browser-use-windows.git",
     "directory": "packages/open-browser-use-js"
   },
   "bugs": {
-    "url": "https://github.com/iFurySt/open-codex-browser-use/issues"
+    "url": "https://github.com/Kiana-ZY/open-browser-use-windows/issues"
   },
-  "homepage": "https://github.com/iFurySt/open-codex-browser-use/tree/main/packages/open-browser-use-js#readme",
+  "homepage": "https://github.com/Kiana-ZY/open-browser-use-windows/tree/main/packages/open-browser-use-js#readme",
   "engines": {
     "node": ">=18"
   },

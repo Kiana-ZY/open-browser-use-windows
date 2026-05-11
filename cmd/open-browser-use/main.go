@@ -21,12 +21,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/host"
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/host"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.26"
+const version = "0.1.29"
 const defaultChromeExtensionID = "bgjoihaepiejlfjinojjfgokghnodnhd"
 const defaultCLISessionID = "obu-cli"
 const defaultMCPSessionID = "obu-mcp"
@@ -90,6 +90,7 @@ func newRootCommand() *cobra.Command {
 		newFinalizeTabsCommand(),
 		newNameSessionCommand(),
 		newCdpCommand(),
+		newPageInfoCommand(),
 		newTextCommand(),
 		newScreenshotCommand(),
 		newWaitCommand(),
@@ -116,8 +117,8 @@ func newHostCommand() *cobra.Command {
 			return runHost(socketDir, socketPath)
 		},
 	}
-	cmd.Flags().StringVar(&socketDir, "socket-dir", host.DefaultSocketDir(), "directory for SDK Unix sockets")
-	cmd.Flags().StringVar(&socketPath, "socket-path", "", "explicit SDK Unix socket path")
+	cmd.Flags().StringVar(&socketDir, "socket-dir", host.DefaultSocketDir(), "directory for SDK relay registry")
+	cmd.Flags().StringVar(&socketPath, "socket-path", "", "explicit SDK relay path")
 	return cmd
 }
 
@@ -711,6 +712,7 @@ type socketOptions struct {
 	timeout    time.Duration
 	sessionID  string
 	jsonOutput bool
+	traceLog   string
 }
 
 func addSocketFlags(cmd *cobra.Command, options *socketOptions) {
@@ -722,10 +724,11 @@ func addSocketFlags(cmd *cobra.Command, options *socketOptions) {
 		}
 	}
 	cmd.Flags().StringVar(&options.socketPath, "socket", "", "Unix socket or TCP relay path")
-	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir(), "directory containing active socket registry")
+	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir(), "directory containing active relay registry")
 	cmd.Flags().DurationVar(&options.timeout, "timeout", 10*time.Second, "request timeout")
 	cmd.Flags().StringVar(&options.sessionID, "session-id", options.sessionID, "browser session id (env: OBU_SESSION_ID)")
 	cmd.Flags().BoolVar(&options.jsonOutput, "json", false, "output raw result value only, no JSON-RPC wrapper")
+	cmd.Flags().StringVar(&options.traceLog, "trace-log", "", "write browser action trace JSONL to this file")
 }
 
 func newCallCommand() *cobra.Command {
@@ -836,7 +839,15 @@ func newHistoryCommand() *cobra.Command {
 			if to != "" {
 				params["to"] = to
 			}
-			return invokeAndWrite(options, "getUserHistory", params)
+			response, err := invokeWithOptions(options, "getUserHistory", params)
+			if err != nil {
+				return err
+			}
+			if options.jsonOutput {
+				result, _ := response["result"].([]any)
+				return writeJSON(map[string]any{"items": result})
+			}
+			return writeJSON(response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -944,6 +955,8 @@ func newCdpCommand() *cobra.Command {
 func newTextCommand() *cobra.Command {
 	var options socketOptions
 	var tabID int
+	var selector string
+	var maxChars int
 	cmd := &cobra.Command{
 		Use:   "text",
 		Short: "Get page text content",
@@ -954,18 +967,68 @@ func newTextCommand() *cobra.Command {
 				return errors.New("text requires --tab-id or OBU_TAB_ID env var")
 			}
 			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
-			return invokeAndWrite(options, "executeCdp", map[string]any{
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
 				"target": map[string]any{"tabId": tabID},
 				"method": "Runtime.evaluate",
 				"commandParams": map[string]any{
-					"expression":    "document.body?.innerText ?? ''",
+					"expression":    pageTextJS(selector, maxChars),
 					"returnByValue": true,
 				},
 			})
+			if err != nil {
+				return err
+			}
+			if options.jsonOutput {
+				return writeJSON(map[string]any{"text": runtimeEvaluateString(response)})
+			}
+			return writeJSON(response)
 		},
 	}
 	addSocketFlags(cmd, &options)
 	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	cmd.Flags().StringVar(&selector, "selector", "", "optional CSS selector to read")
+	cmd.Flags().IntVar(&maxChars, "max-chars", 0, "maximum characters to return")
+	return cmd
+}
+
+func newPageInfoCommand() *cobra.Command {
+	var options socketOptions
+	var tabID int
+	var selector string
+	var maxChars int
+	cmd := &cobra.Command{
+		Use:   "page-info",
+		Short: "Read page title, URL, readyState, and body text",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			tabID = envTabID(tabID)
+			if tabID <= 0 {
+				return errors.New("page-info requires --tab-id or OBU_TAB_ID env var")
+			}
+			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+				"target": map[string]any{"tabId": tabID},
+				"method": "Runtime.evaluate",
+				"commandParams": map[string]any{
+					"expression":    pageInfoJS(selector, maxChars),
+					"returnByValue": true,
+				},
+			})
+			if err != nil {
+				return err
+			}
+			if options.jsonOutput {
+				result, _ := response["result"].(map[string]any)
+				cdpResult, _ := result["result"].(map[string]any)
+				return writeJSON(cdpResult["value"])
+			}
+			return writeJSON(response)
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	cmd.Flags().StringVar(&selector, "selector", "", "optional CSS selector to read as text")
+	cmd.Flags().IntVar(&maxChars, "max-chars", 0, "maximum text characters to return")
 	return cmd
 }
 
@@ -973,6 +1036,8 @@ func newScreenshotCommand() *cobra.Command {
 	var options socketOptions
 	var tabID int
 	var output string
+	var selector string
+	var fullPage bool
 	cmd := &cobra.Command{
 		Use:   "screenshot",
 		Short: "Take a page screenshot",
@@ -982,34 +1047,22 @@ func newScreenshotCommand() *cobra.Command {
 			if tabID <= 0 {
 				return errors.New("screenshot requires --tab-id or OBU_TAB_ID env var")
 			}
-			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
-			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
-				"target":        map[string]any{"tabId": tabID},
-				"method":        "Page.captureScreenshot",
-				"commandParams": map[string]any{"format": "png"},
-			})
+			result, err := captureScreenshot(options, tabID, output, selector, fullPage)
 			if err != nil {
 				return err
 			}
-			result, _ := response["result"].(map[string]any)
-			data, _ := result["data"].(string)
-			if data == "" {
-				return errors.New("screenshot returned no data")
+			if options.jsonOutput {
+				return writeJSON(result)
 			}
-			decoded, err := base64.StdEncoding.DecodeString(data)
-			if err != nil {
-				return err
-			}
-			path := output
-			if path == "" {
-				path = fmt.Sprintf("screenshot-%d.png", time.Now().Unix())
-			}
-			return os.WriteFile(path, decoded, 0o644)
+			fmt.Println(result["path"])
+			return nil
 		},
 	}
 	addSocketFlags(cmd, &options)
 	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
 	cmd.Flags().StringVar(&output, "output", "", "output file path")
+	cmd.Flags().StringVar(&selector, "selector", "", "optional CSS selector to screenshot")
+	cmd.Flags().BoolVar(&fullPage, "full-page", false, "capture the full page")
 	return cmd
 }
 
@@ -1047,6 +1100,9 @@ func newWaitCommand() *cobra.Command {
 				cdpResult, _ := result["result"].(map[string]any)
 				if val, ok := cdpResult["value"].(string); ok {
 					if val == "complete" || (state == "domcontentloaded" && val == "interactive") {
+						if options.jsonOutput {
+							return writeJSON(map[string]any{"readyState": val})
+						}
 						fmt.Println(val)
 						return nil
 					}
@@ -1064,9 +1120,160 @@ func newWaitCommand() *cobra.Command {
 	return cmd
 }
 
-func snapshotJS() string {
+func pageTextJS(selector string, maxChars int) string {
+	selectorJSON, _ := json.Marshal(selector)
+	return fmt.Sprintf(`(() => {
+  const selector = %s;
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (%d > 0 && text.length > %d) text = text.slice(0, %d);
+  return text;
+})()`, string(selectorJSON), maxChars, maxChars, maxChars)
+}
+
+func pageInfoJS(selector string, maxChars int) string {
+	selectorJSON, _ := json.Marshal(selector)
+	return fmt.Sprintf(`(() => {
+  const selector = %s;
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (%d > 0 && text.length > %d) text = text.slice(0, %d);
+  return { title: document.title ?? "", url: location.href, readyState: document.readyState, text };
+})()`, string(selectorJSON), maxChars, maxChars, maxChars)
+}
+
+func selectorClipJS(selector string) string {
+	selectorJSON, _ := json.Marshal(selector)
+	return fmt.Sprintf(`(() => {
+  const selector = %s;
+  const el = document.querySelector(selector);
+  if (!el) return { ok: false, reason: "not-found", selector };
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { ok: false, reason: "not-visible", selector, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+  }
+  return {
+    ok: true,
+    selector,
+    clip: {
+      x: Math.max(0, rect.left + window.scrollX),
+      y: Math.max(0, rect.top + window.scrollY),
+      width: rect.width,
+      height: rect.height,
+      scale: 1
+    }
+  };
+})()`, string(selectorJSON))
+}
+
+func fullPageClipJS() string {
 	return `(() => {
-  if (typeof window.__obu_refs !== 'undefined') return window.__obu_refs;
+  const doc = document.documentElement;
+  const body = document.body;
+  const width = Math.max(doc?.scrollWidth ?? 0, body?.scrollWidth ?? 0, doc?.clientWidth ?? 0, window.innerWidth);
+  const height = Math.max(doc?.scrollHeight ?? 0, body?.scrollHeight ?? 0, doc?.clientHeight ?? 0, window.innerHeight);
+  return { ok: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+})()`
+}
+
+func captureScreenshot(options socketOptions, tabID int, output string, selector string, fullPage bool) (map[string]any, error) {
+	if _, err := invokeWithOptions(options, "attach", map[string]any{"tabId": tabID}); err != nil {
+		return nil, err
+	}
+	params := map[string]any{"format": "png"}
+	var clip map[string]any
+	if selector != "" {
+		resolvedClip, err := resolveScreenshotClip(options, tabID, selectorClipJS(selector), "selector")
+		if err != nil {
+			return nil, err
+		}
+		clip = resolvedClip
+		params["clip"] = clip
+	} else if fullPage {
+		resolvedClip, err := resolveScreenshotClip(options, tabID, fullPageClipJS(), "full-page")
+		if err != nil {
+			return nil, err
+		}
+		clip = resolvedClip
+		params["clip"] = clip
+	}
+	response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+		"target":        map[string]any{"tabId": tabID},
+		"method":        "Page.captureScreenshot",
+		"commandParams": params,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, _ := response["result"].(map[string]any)
+	data, _ := result["data"].(string)
+	if data == "" {
+		return nil, errors.New("screenshot returned no data")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil, err
+	}
+	path := output
+	if path == "" {
+		path = fmt.Sprintf("screenshot-%d.png", time.Now().Unix())
+	}
+	if err := os.WriteFile(path, decoded, 0o644); err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"path":   path,
+		"bytes":  len(decoded),
+		"format": "png",
+		"tabId":  tabID,
+	}
+	if selector != "" {
+		out["selector"] = selector
+	}
+	if clip != nil {
+		out["clip"] = clip
+	}
+	return out, nil
+}
+
+func resolveScreenshotClip(options socketOptions, tabID int, expression string, label string) (map[string]any, error) {
+	response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+		"target": map[string]any{"tabId": tabID},
+		"method": "Runtime.evaluate",
+		"commandParams": map[string]any{
+			"expression":    expression,
+			"returnByValue": true,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	value, err := runtimeEvaluateMap(response)
+	if err != nil {
+		return nil, err
+	}
+	ok, _ := value["ok"].(bool)
+	if !ok {
+		reason, _ := value["reason"].(string)
+		if reason == "" {
+			reason = "unknown"
+		}
+		return nil, fmt.Errorf("%s screenshot clip failed: %s", label, reason)
+	}
+	clip, ok := value["clip"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s screenshot clip returned no clip", label)
+	}
+	return clip, nil
+}
+
+func snapshotJS(limit int) string {
+	if limit <= 0 {
+		limit = 100
+	}
+	return fmt.Sprintf(`(() => {
+  if (typeof window.__obu_refs !== 'undefined' && window.__obu_refs_limit === %d) return window.__obu_refs;
   const els = document.querySelectorAll('button, a, input, select, textarea, [role=button], [role=textbox], [role=combobox]');
   const results = [];
   let idx = 0;
@@ -1081,11 +1288,12 @@ func snapshotJS() string {
     el.setAttribute('data-obu-ref', String(idx + 1));
     results.push({ index: idx + 1, tag, text, type, href, selector });
     idx++;
-    if (idx >= 100) break;
+    if (idx >= %d) break;
   }
   window.__obu_refs = results;
+  window.__obu_refs_limit = %d;
   return results;
-})()`
+})()`, limit, limit, limit)
 }
 
 func snapshotDir() string {
@@ -1120,9 +1328,124 @@ func loadSnapshot(sessionID string) ([]map[string]any, error) {
 	return data, nil
 }
 
+func snapshotItemsFromResponse(response map[string]any) ([]map[string]any, error) {
+	result, _ := response["result"].(map[string]any)
+	cdpResult, _ := result["result"].(map[string]any)
+	value, _ := cdpResult["value"]
+	elements, _ := value.([]any)
+	if elements == nil {
+		return nil, errors.New("snapshot returned no elements")
+	}
+	items := make([]map[string]any, 0, len(elements))
+	for _, el := range elements {
+		item, ok := el.(map[string]any)
+		if !ok {
+			return nil, errors.New("snapshot returned a non-object element")
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func interactionPreludeJS(ref string) string {
+	refJSON, _ := json.Marshal(ref)
+	return fmt.Sprintf(`const ref = %s;
+  const el = [...document.querySelectorAll("[data-obu-ref]")].find((candidate) => candidate.getAttribute("data-obu-ref") === ref);
+  const describe = (reason, extra = {}) => ({
+    ok: false,
+    ref,
+    reason,
+    tag: el?.tagName?.toLowerCase?.() ?? "",
+    text: (el?.innerText || el?.value || el?.placeholder || el?.getAttribute?.("aria-label") || "").trim().slice(0, 120),
+    ...extra,
+  });
+  if (!el) return { ok: false, ref, reason: "not-found" };
+  if (el.disabled || el.getAttribute("aria-disabled") === "true") return describe("disabled");
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") {
+    return describe("not-visible", { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+  }
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;`, string(refJSON))
+}
+
+func clickJS(ref string) string {
+	return fmt.Sprintf(`(() => {
+  %s
+  const eventInit = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+  for (const type of ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup"]) {
+    const EventClass = type.startsWith("pointer") && window.PointerEvent ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new EventClass(type, eventInit));
+  }
+  if (typeof el.click === "function") el.click();
+  return {
+    ok: true,
+    ref,
+    action: "click",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`, interactionPreludeJS(ref))
+}
+
+func fillJS(ref string, text string) string {
+	textJSON, _ := json.Marshal(text)
+	return fmt.Sprintf(`(() => {
+  %s
+  const text = %s;
+  el.focus();
+  if (el.isContentEditable) {
+    el.textContent = text;
+  } else if ("value" in el) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype :
+      el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor?.set) {
+      descriptor.set.call(el, text);
+    } else {
+      el.value = text;
+    }
+  } else {
+    return describe("not-fillable");
+  }
+  el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return {
+    ok: true,
+    ref,
+    action: "fill",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    valueLength: String(("value" in el ? el.value : el.textContent) ?? "").length,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`, interactionPreludeJS(ref), string(textJSON))
+}
+
+func interactionResultFromResponse(action string, response map[string]any) (map[string]any, error) {
+	result, err := runtimeEvaluateMap(response)
+	if err != nil {
+		return nil, err
+	}
+	ok, _ := result["ok"].(bool)
+	if !ok {
+		reason, _ := result["reason"].(string)
+		if reason == "" {
+			reason = "unknown"
+		}
+		return result, fmt.Errorf("%s failed: %s", action, reason)
+	}
+	return result, nil
+}
+
 func newSnapshotCommand() *cobra.Command {
 	var options socketOptions
 	var tabID int
+	var limit int
 	cmd := &cobra.Command{
 		Use:   "snapshot",
 		Short: "List interactive elements with ref indices (@1, @2, ...)",
@@ -1136,26 +1459,19 @@ func newSnapshotCommand() *cobra.Command {
 			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
 				"target":        map[string]any{"tabId": tabID},
 				"method":        "Runtime.evaluate",
-				"commandParams": map[string]any{"expression": snapshotJS(), "returnByValue": true},
+				"commandParams": map[string]any{"expression": snapshotJS(limit), "returnByValue": true},
 			})
 			if err != nil {
 				return err
 			}
-			result, _ := response["result"].(map[string]any)
-			cdpResult, _ := result["result"].(map[string]any)
-			value, _ := cdpResult["value"]
-			elements, _ := value.([]any)
-			if elements == nil {
-				return errors.New("snapshot returned no elements")
-			}
-			var items []map[string]any
-			for _, el := range elements {
-				items = append(items, el.(map[string]any))
+			items, err := snapshotItemsFromResponse(response)
+			if err != nil {
+				return err
 			}
 			_ = saveSnapshot(options.sessionID, items)
 
 			if options.jsonOutput {
-				return writeJSON(items)
+				return writeJSON(map[string]any{"items": items})
 			}
 			for _, item := range items {
 				idx := int(item["index"].(float64))
@@ -1170,6 +1486,7 @@ func newSnapshotCommand() *cobra.Command {
 	}
 	addSocketFlags(cmd, &options)
 	cmd.Flags().IntVar(&tabID, "tab-id", 0, "tab id (env: OBU_TAB_ID)")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum interactive elements to return")
 	return cmd
 }
 
@@ -1187,14 +1504,22 @@ func newClickCommand() *cobra.Command {
 			}
 			ref := strings.TrimPrefix(args[0], "@")
 			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
-			return invokeAndWrite(options, "executeCdp", map[string]any{
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
 				"target": map[string]any{"tabId": tabID},
 				"method": "Runtime.evaluate",
 				"commandParams": map[string]any{
-					"expression":    fmt.Sprintf(`document.querySelector('[data-obu-ref="%s"]')?.click()`, ref),
+					"expression":    clickJS(ref),
 					"returnByValue": true,
 				},
 			})
+			if err != nil {
+				return err
+			}
+			result, err := interactionResultFromResponse("click", response)
+			if options.jsonOutput {
+				_ = writeJSON(result)
+			}
+			return err
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1216,17 +1541,23 @@ func newFillCommand() *cobra.Command {
 			}
 			ref := strings.TrimPrefix(args[0], "@")
 			text := strings.Join(args[1:], " ")
-			escaped := strings.ReplaceAll(text, "\\", "\\\\")
-			escaped = strings.ReplaceAll(escaped, "'", "\\'")
 			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
-			return invokeAndWrite(options, "executeCdp", map[string]any{
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
 				"target": map[string]any{"tabId": tabID},
 				"method": "Runtime.evaluate",
 				"commandParams": map[string]any{
-					"expression":    fmt.Sprintf(`(()=>{const el=document.querySelector('[data-obu-ref="%s"]');if(el){el.focus();el.value='%s';el.dispatchEvent(new Event('input',{bubbles:true}));return true;}return false})()`, ref, escaped),
+					"expression":    fillJS(ref, text),
 					"returnByValue": true,
 				},
 			})
+			if err != nil {
+				return err
+			}
+			result, err := interactionResultFromResponse("fill", response)
+			if options.jsonOutput {
+				_ = writeJSON(result)
+			}
+			return err
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1367,11 +1698,19 @@ func newNavigateCommand() *cobra.Command {
 				return errors.New("navigate requires --url")
 			}
 			_, _ = invokeWithOptions(options, "attach", map[string]any{"tabId": tabID})
-			return invokeAndWrite(options, "executeCdp", map[string]any{
+			response, err := invokeWithOptions(options, "executeCdp", map[string]any{
 				"target":        map[string]any{"tabId": tabID},
 				"method":        "Page.navigate",
 				"commandParams": map[string]any{"url": url},
 			})
+			if err != nil {
+				return err
+			}
+			if options.jsonOutput {
+				result, _ := response["result"].(map[string]any)
+				return writeJSON(map[string]any{"navigate": result})
+			}
+			return writeJSON(response)
 		},
 	}
 	addSocketFlags(cmd, &options)
@@ -1407,6 +1746,7 @@ type actionRunOutput struct {
 type actionStepOutput struct {
 	Line     int            `json:"line"`
 	Action   string         `json:"action"`
+	Risk     string         `json:"risk"`
 	TabID    int            `json:"tabId,omitempty"`
 	Response map[string]any `json:"response"`
 }
@@ -1443,16 +1783,21 @@ func (runner *actionRunner) run(script string) (actionRunOutput, error) {
 func (runner *actionRunner) runActionLine(line actionLine) (actionStepOutput, error) {
 	action := line.fields[0]
 	args := line.fields[1:]
+	startedAt := time.Now()
 	response, tabID, err := runner.runAction(action, args)
 	if err != nil {
+		_ = runner.writeTrace(line.number, action, actionRisk(action), tabID, startedAt, err)
 		return actionStepOutput{}, err
 	}
-	return actionStepOutput{
+	step := actionStepOutput{
 		Line:     line.number,
 		Action:   action,
+		Risk:     actionRisk(action),
 		TabID:    tabID,
 		Response: response,
-	}, nil
+	}
+	_ = runner.writeTrace(line.number, action, step.Risk, tabID, startedAt, nil)
+	return step, nil
 }
 
 func (runner *actionRunner) runAction(action string, args []string) (map[string]any, int, error) {
@@ -1490,6 +1835,16 @@ func (runner *actionRunner) runAction(action string, args []string) (map[string]
 		return runner.runWaitLoadAction(args)
 	case "page-info":
 		return runner.runPageInfoAction(args)
+	case "text":
+		return runner.runTextAction(args)
+	case "snapshot":
+		return runner.runSnapshotAction(args)
+	case "click":
+		return runner.runClickAction(args)
+	case "fill":
+		return runner.runFillAction(args)
+	case "screenshot":
+		return runner.runScreenshotAction(args)
 	case "cdp":
 		return runner.runCDPAction(args)
 	case "history":
@@ -1507,6 +1862,56 @@ func (runner *actionRunner) runAction(action string, args []string) (map[string]
 	default:
 		return nil, 0, fmt.Errorf("unsupported action %q", action)
 	}
+}
+
+func actionRisk(action string) string {
+	switch action {
+	case "click", "fill", "move-mouse":
+		return "interaction"
+	case "navigate", "open-tab", "claim-tab":
+		return "navigation"
+	case "set-file-chooser-files":
+		return "file-system"
+	case "wait-file-chooser", "screenshot", "snapshot", "text", "page-info", "history", "tabs", "user-tabs", "info", "ping", "wait-load":
+		return "read"
+	case "finalize-tabs", "turn-ended", "name-session":
+		return "session"
+	case "cdp", "call":
+		return "unrestricted"
+	default:
+		return "unknown"
+	}
+}
+
+func (runner *actionRunner) writeTrace(line int, action string, risk string, tabID int, startedAt time.Time, actionErr error) error {
+	if runner.options.traceLog == "" {
+		return nil
+	}
+	entry := map[string]any{
+		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
+		"sessionId":  runner.sessionID,
+		"turnId":     runner.turnID,
+		"line":       line,
+		"action":     action,
+		"risk":       risk,
+		"tabId":      tabID,
+		"durationMs": time.Since(startedAt).Milliseconds(),
+		"ok":         actionErr == nil,
+	}
+	if actionErr != nil {
+		entry["error"] = actionErr.Error()
+	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(runner.options.traceLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(payload, '\n'))
+	return err
 }
 
 func (runner *actionRunner) runOpenTabAction(args []string) (map[string]any, int, error) {
@@ -1609,6 +2014,8 @@ func (runner *actionRunner) runPageInfoAction(args []string) (map[string]any, in
 	if err != nil {
 		return nil, 0, err
 	}
+	selector := stringFlag(args, "--selector")
+	maxChars, _ := intFlag(args, "--max-chars")
 	if err := runner.attach(tabID); err != nil {
 		return nil, 0, err
 	}
@@ -1616,11 +2023,148 @@ func (runner *actionRunner) runPageInfoAction(args []string) (map[string]any, in
 		"target": map[string]any{"tabId": tabID},
 		"method": "Runtime.evaluate",
 		"commandParams": map[string]any{
-			"expression":    `({ title: document.title ?? "", url: location.href, readyState: document.readyState, text: document.body?.innerText ?? "" })`,
+			"expression":    pageInfoJS(selector, maxChars),
 			"returnByValue": true,
 		},
 	})
 	return response, tabID, err
+}
+
+func (runner *actionRunner) runTextAction(args []string) (map[string]any, int, error) {
+	tabID, err := tabIDArgOrCurrent(args, runner.currentTabID)
+	if err != nil {
+		return nil, 0, err
+	}
+	selector := stringFlag(args, "--selector")
+	maxChars, _ := intFlag(args, "--max-chars")
+	if err := runner.attach(tabID); err != nil {
+		return nil, 0, err
+	}
+	response, _, err := runner.invoke("executeCdp", map[string]any{
+		"target": map[string]any{"tabId": tabID},
+		"method": "Runtime.evaluate",
+		"commandParams": map[string]any{
+			"expression":    pageTextJS(selector, maxChars),
+			"returnByValue": true,
+		},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return map[string]any{"result": map[string]any{"text": runtimeEvaluateString(response)}}, tabID, nil
+}
+
+func (runner *actionRunner) runSnapshotAction(args []string) (map[string]any, int, error) {
+	tabID, err := tabIDArgOrCurrent(args, runner.currentTabID)
+	if err != nil {
+		return nil, 0, err
+	}
+	limit := 100
+	if value, ok := intFlag(args, "--limit"); ok {
+		limit = value
+	}
+	if err := runner.attach(tabID); err != nil {
+		return nil, 0, err
+	}
+	response, _, err := runner.invoke("executeCdp", map[string]any{
+		"target":        map[string]any{"tabId": tabID},
+		"method":        "Runtime.evaluate",
+		"commandParams": map[string]any{"expression": snapshotJS(limit), "returnByValue": true},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	items, err := snapshotItemsFromResponse(response)
+	if err != nil {
+		return nil, 0, err
+	}
+	_ = saveSnapshot(runner.sessionID, items)
+	return map[string]any{"result": map[string]any{"items": items}}, tabID, nil
+}
+
+func (runner *actionRunner) runClickAction(args []string) (map[string]any, int, error) {
+	tabID, err := tabIDArgOrCurrent(args, runner.currentTabID)
+	if err != nil {
+		return nil, 0, err
+	}
+	ref := firstStringArg(args, "--ref")
+	if ref == "" {
+		return nil, 0, errors.New("click requires @ref or --ref")
+	}
+	ref = strings.TrimPrefix(ref, "@")
+	if err := runner.attach(tabID); err != nil {
+		return nil, 0, err
+	}
+	response, _, err := runner.invoke("executeCdp", map[string]any{
+		"target": map[string]any{"tabId": tabID},
+		"method": "Runtime.evaluate",
+		"commandParams": map[string]any{
+			"expression":    clickJS(ref),
+			"returnByValue": true,
+		},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	result, err := interactionResultFromResponse("click", response)
+	if err != nil {
+		return map[string]any{"result": result}, tabID, err
+	}
+	return map[string]any{"result": result}, tabID, nil
+}
+
+func (runner *actionRunner) runFillAction(args []string) (map[string]any, int, error) {
+	tabID, err := tabIDArgOrCurrent(args, runner.currentTabID)
+	if err != nil {
+		return nil, 0, err
+	}
+	positionals := positionalArgs(args)
+	if len(positionals) < 2 && stringFlag(args, "--text") == "" {
+		return nil, 0, errors.New("fill requires @ref and text")
+	}
+	ref := stringFlag(args, "--ref")
+	text := stringFlag(args, "--text")
+	if ref == "" && len(positionals) > 0 {
+		ref = positionals[0]
+	}
+	if text == "" && len(positionals) > 1 {
+		text = strings.Join(positionals[1:], " ")
+	}
+	ref = strings.TrimPrefix(ref, "@")
+	if err := runner.attach(tabID); err != nil {
+		return nil, 0, err
+	}
+	response, _, err := runner.invoke("executeCdp", map[string]any{
+		"target": map[string]any{"tabId": tabID},
+		"method": "Runtime.evaluate",
+		"commandParams": map[string]any{
+			"expression":    fillJS(ref, text),
+			"returnByValue": true,
+		},
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	result, err := interactionResultFromResponse("fill", response)
+	if err != nil {
+		return map[string]any{"result": result}, tabID, err
+	}
+	return map[string]any{"result": result}, tabID, nil
+}
+
+func (runner *actionRunner) runScreenshotAction(args []string) (map[string]any, int, error) {
+	tabID, err := tabIDArgOrCurrent(args, runner.currentTabID)
+	if err != nil {
+		return nil, 0, err
+	}
+	output := stringFlag(args, "--output")
+	selector := stringFlag(args, "--selector")
+	fullPage := boolFlag(args, "--full-page")
+	result, err := captureScreenshot(runner.options, tabID, output, selector, fullPage)
+	if err != nil {
+		return nil, 0, err
+	}
+	return map[string]any{"result": result}, tabID, nil
 }
 
 func (runner *actionRunner) runCDPAction(args []string) (map[string]any, int, error) {
@@ -1906,6 +2450,24 @@ func intFlag(args []string, name string) (int, bool) {
 	return parsed, true
 }
 
+func boolFlag(args []string, name string) bool {
+	for index, arg := range args {
+		if arg == name {
+			return true
+		}
+		prefix := name + "="
+		if strings.HasPrefix(arg, prefix) {
+			value := strings.TrimPrefix(arg, prefix)
+			parsed, err := strconv.ParseBool(value)
+			return err == nil && parsed
+		}
+		if strings.HasPrefix(arg, "--") && !strings.Contains(arg, "=") {
+			index++
+		}
+	}
+	return false
+}
+
 func positionalArgs(args []string) []string {
 	var out []string
 	for index := 0; index < len(args); index++ {
@@ -1928,6 +2490,20 @@ func runtimeEvaluateString(response map[string]any) string {
 	return value
 }
 
+func runtimeEvaluateValue(response map[string]any) any {
+	result, _ := response["result"].(map[string]any)
+	cdpResult, _ := result["result"].(map[string]any)
+	return cdpResult["value"]
+}
+
+func runtimeEvaluateMap(response map[string]any) (map[string]any, error) {
+	value, ok := runtimeEvaluateValue(response).(map[string]any)
+	if !ok {
+		return nil, errors.New("runtime evaluation returned no object value")
+	}
+	return value, nil
+}
+
 func invokeAndWrite(options socketOptions, method string, params map[string]any) error {
 	response, err := invokeWithOptions(options, method, params)
 	if err != nil {
@@ -1935,9 +2511,27 @@ func invokeAndWrite(options socketOptions, method string, params map[string]any)
 	}
 	if options.jsonOutput {
 		result, _ := response["result"]
-		return writeJSON(result)
+		return writeJSON(normalizeJSONResult(method, result))
 	}
 	return writeJSON(response)
+}
+
+func normalizeJSONResult(method string, result any) any {
+	switch method {
+	case "ping":
+		return map[string]any{"status": result}
+	case "getTabs", "getUserTabs", "getUserHistory":
+		if result == nil {
+			return map[string]any{"items": []any{}}
+		}
+		return map[string]any{"items": result}
+	case "claimUserTab":
+		return map[string]any{"tab": result}
+	case "nameSession", "finalizeTabs", "turnEnded":
+		return map[string]any{"ok": true}
+	default:
+		return result
+	}
 }
 
 func invokeWithOptions(options socketOptions, method string, params map[string]any) (map[string]any, error) {
@@ -1982,6 +2576,9 @@ func applySessionDefaults(params map[string]any, sessionID string) {
 	}
 	if _, ok := params["turn_id"]; !ok {
 		params["turn_id"] = fmt.Sprintf("%s-%d", sessionID, time.Now().UnixNano())
+	}
+	if _, ok := params["request_id"]; !ok {
+		params["request_id"] = fmt.Sprintf("%s-%d", sessionID, time.Now().UnixNano())
 	}
 }
 
@@ -2195,7 +2792,7 @@ func nativeManifest(extensionID string, hostPath string) (map[string]any, error)
 	}
 	return map[string]any{
 		"name":        host.NativeHostName,
-		"description": "Open Browser Use Chrome native messaging host",
+		"description": "Open Browser Use for Windows native messaging host",
 		"type":        "stdio",
 		"path":        path,
 		"allowed_origins": []string{
@@ -2350,7 +2947,7 @@ func defaultNativeHostManifestPath(browser string) (string, error) {
 func downloadLatestReleaseZIP() (string, error) {
 	assetName := fmt.Sprintf("open-browser-use-chrome-extension-%s.zip", version)
 	url := fmt.Sprintf(
-		"https://github.com/iFurySt/open-codex-browser-use/releases/download/v%s/%s",
+		"https://github.com/Kiana-ZY/open-browser-use-windows/releases/download/v%s/%s",
 		version,
 		assetName,
 	)

@@ -1,18 +1,18 @@
 [project]
 name = "open-browser-use-sdk"
-version = "0.1.26"
-description = "Python SDK for Open Browser Use."
+version = "0.1.29"
+description = "Python SDK for Open Browser Use for Windows."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-  { name = "iFurySt" }
+  { name = "Kiana-ZY" }
 ]
 
 [project.urls]
-Homepage = "https://github.com/iFurySt/open-codex-browser-use"
-Repository = "https://github.com/iFurySt/open-codex-browser-use"
-Issues = "https://github.com/iFurySt/open-codex-browser-use/issues"
+Homepage = "https://github.com/Kiana-ZY/open-browser-use-windows"
+Repository = "https://github.com/Kiana-ZY/open-browser-use-windows"
+Issues = "https://github.com/Kiana-ZY/open-browser-use-windows/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

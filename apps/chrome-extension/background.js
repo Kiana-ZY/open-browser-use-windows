@@ -245,7 +245,7 @@ class BrowserBackend {
       await chrome.storage.local.set({ extensionInstanceId });
     }
     return {
-      name: "Open Browser Use Chrome",
+      name: "Open Browser Use for Windows",
       version: chrome.runtime.getManifest().version,
       type: "extension",
       metadata: {
@@ -704,7 +704,7 @@ class BrowserBackend {
   }
 
   async executeUnhandledCommand(params) {
-    throw new Error(`Open Browser Use Chrome does not support command "${params.type}"`);
+    throw new Error(`Open Browser Use for Windows does not support command "${params.type}"`);
   }
 
   addDownloadChangeListener(listener) {

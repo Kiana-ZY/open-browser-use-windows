@@ -1,10 +1,10 @@
-# Open Browser Use Privacy Policy
+# Open Browser Use for Windows Privacy Policy
 
 Last updated: May 9, 2026
 
-Open Browser Use is a Chrome extension that connects Chrome to a local Open
-Browser Use native messaging host. It is designed for browser automation by
-compatible local agent tools.
+Open Browser Use for Windows is a Chromium extension that connects Chrome or
+Microsoft Edge to a local Open Browser Use native messaging host. It is
+designed for browser automation by compatible local agent tools.
 
 ## Data handled by the extension
 
@@ -44,4 +44,4 @@ extension or clears browser extension data.
 
 For privacy or support questions, use the project issue tracker:
 
-<https://github.com/iFurySt/open-browser-use/issues>
+<https://github.com/Kiana-ZY/open-browser-use-windows/issues>

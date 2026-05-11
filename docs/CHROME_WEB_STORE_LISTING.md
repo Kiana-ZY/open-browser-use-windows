@@ -22,27 +22,28 @@ Store Developer Dashboard still needs:
 Suggested item name:
 
 ```text
-Open Browser Use
+Open Browser Use for Windows
 ```
 
 Suggested one-line summary:
 
 ```text
-Connect local AI agents to your own Chrome browser through Open Browser Use.
+Connect local AI agents to your own Chrome or Edge browser through Open Browser Use for Windows.
 ```
 
 Suggested detailed description:
 
 ```text
-Open Browser Use is a developer extension for local browser automation. It
-connects Chrome to the open-source Open Browser Use native host so approved
-local tools and SDKs can create tabs, inspect tab state, execute Chrome DevTools
-Protocol commands, observe downloads, and organize agent-controlled tabs.
+Open Browser Use for Windows is a developer extension for local browser
+automation. It connects Chrome or Microsoft Edge to the open-source Open
+Browser Use native host so approved local tools and SDKs can create tabs,
+inspect tab state, execute Chrome DevTools Protocol commands, observe
+downloads, and organize agent-controlled tabs.
 
-The extension is intended for developers running Open Browser Use on their own
-machine. It does not provide hosted automation, does not include the native host
-binary, and requires the user to install and register the Open Browser Use
-native messaging host separately.
+The extension is intended for developers running Open Browser Use for Windows
+on their own machine. It does not provide hosted automation, does not include
+the native host binary, and requires the user to install and register the Open
+Browser Use native messaging host separately.
 ```
 
 Suggested category:
@@ -62,21 +63,21 @@ English
 Suggested single purpose:
 
 ```text
-Open Browser Use lets a locally installed native host and local SDK control
-Chrome tabs for developer-owned browser automation workflows.
+Open Browser Use for Windows lets a locally installed native host and local SDK
+control Chrome or Edge tabs for developer-owned browser automation workflows.
 ```
 
 Suggested data use disclosure:
 
 ```text
 The extension can read tab metadata, browser history entries requested through
-the local Open Browser Use API, download events while an automation session is
-active, clipboard content explicitly requested by the local caller for a
-controlled tab, and page content exposed through Chrome DevTools Protocol
+the local Open Browser Use for Windows API, download events while an automation
+session is active, clipboard content explicitly requested by the local caller
+for a controlled tab, and page content exposed through Chrome DevTools Protocol
 commands.
 This data is sent only to the locally installed Open Browser Use native host
-over Chrome Native Messaging. The extension does not send data to an
-Open Browser Use cloud service.
+over Chromium Native Messaging. The extension does not send data to an Open
+Browser Use cloud service.
 ```
 
 Suggested data sale / third-party use statement:
@@ -126,8 +127,8 @@ open-browser-use install-manifest
 
 ## Dashboard Checklist
 
-- Upload or select the `v0.1.11` extension package from
-  `open-browser-use-chrome-extension-0.1.11.zip`.
+- Upload or select the current extension package, for example
+  `open-browser-use-chrome-extension-0.1.29.zip`.
 - Add at least one screenshot that shows the extension popup or a local
   Open Browser Use automation session.
 - Confirm the listing text matches the current native host requirement.

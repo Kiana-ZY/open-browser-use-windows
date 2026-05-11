@@ -25,7 +25,7 @@
   名为 `open-browser-use-sdk`，Python import 模块名仍是 `open_browser_use`。
 - `homebrew-publish.yml`：tag `v*` 推送触发的 Homebrew tap 更新流水线，等待
   GitHub Release 中的 CLI 预编译 tarball 出现后，用真实 asset sha256 渲染
-  `open-browser-use` binary formula 并推送到 `iFurySt/homebrew-open-browser-use`。
+  `open-browser-use` binary formula 并推送到配置的 Homebrew tap 仓库。
 - `chrome-web-store-publish.yml`：手动触发的 Chrome Web Store 发布流水线，
   从已有 GitHub Release 下载 extension zip，再上传并可选提交审核；用于
   release 已经创建、只需要补跑商店发布的场景。
@@ -44,11 +44,11 @@
 2. 在 `scripts/ci.sh` 里继续叠加项目自己的验证命令。
 3. 用真实构建产物替换 `scripts/release-package.sh`。
 4. CLI 和 JS SDK 的 npm 发布走 `npm-publish.yml`，两个包的 trusted
-   publisher 都要配置为 `iFurySt/open-codex-browser-use` + `npm-publish.yml`。
+   publisher 都要配置为 `Kiana-ZY/open-browser-use-windows` + `npm-publish.yml`。
 5. Python SDK 的 PyPI 发布走 `pypi-publish.yml`。首次发布前在 PyPI 账号
    Publishing 页面创建 pending trusted publisher：project name
-   `open-browser-use-sdk`，owner `iFurySt`，repository
-   `open-codex-browser-use`，workflow `pypi-publish.yml`，environment `pypi`。
+   `open-browser-use-sdk`，owner `Kiana-ZY`，repository
+   `open-browser-use-windows`，workflow `pypi-publish.yml`，environment `pypi`。
 6. Homebrew 发布走 `homebrew-publish.yml`，需要仓库 secret
    `HOMEBREW_TAP_TOKEN` 能写入 tap repo。
 7. 浏览器插件发布走 `docs/CHROME_WEB_STORE_RELEASE.md` 里的 Chrome Web

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/host"
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/host"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 )
 
 func TestNativeHostNameIsChromeCompatible(t *testing.T) {
@@ -603,6 +604,11 @@ func TestCobraRunActionPlan(t *testing.T) {
 				serverDone <- errors.New("run action requests did not share session and turn")
 				return
 			}
+			if params["request_id"] == "" {
+				_ = conn.Close()
+				serverDone <- errors.New("run action request did not include request_id")
+				return
+			}
 			requests <- request
 
 			method, _ := request["method"].(string)
@@ -674,6 +680,12 @@ finalize-tabs []
 	if got.Steps[1].Action != "open-tab" || got.Steps[1].TabID != 123 {
 		t.Fatalf("expected open-tab step to capture tab id, got %#v", got.Steps[1])
 	}
+	if got.Steps[1].Risk != "navigation" {
+		t.Fatalf("expected open-tab risk navigation, got %#v", got.Steps[1].Risk)
+	}
+	if got.Steps[3].Risk != "read" {
+		t.Fatalf("expected page-info risk read, got %#v", got.Steps[3].Risk)
+	}
 
 	var methods []string
 	var sessions []string
@@ -706,6 +718,1073 @@ finalize-tabs []
 		if sessionID != defaultCLISessionID {
 			t.Fatalf("expected run action plan to use CLI session %q, got %q", defaultCLISessionID, sessionID)
 		}
+	}
+}
+
+func TestCobraRunActionPlanTraceLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket action plan test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(t.TempDir(), "obu.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			serverDone <- err
+			return
+		}
+		params, _ := request["params"].(map[string]any)
+		if params["request_id"] == "" {
+			serverDone <- errors.New("expected request_id")
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  "pong",
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+	}()
+
+	tracePath := filepath.Join(t.TempDir(), "trace.jsonl")
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"--trace-log", tracePath,
+		"-c", "ping",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(payload)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected one trace line, got %q", string(payload))
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["action"] != "ping" || entry["risk"] != "read" || entry["ok"] != true {
+		t.Fatalf("unexpected trace entry %#v", entry)
+	}
+}
+
+func TestCobraPageInfoJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result map[string]any
+			switch method {
+			case "attach":
+				result = map[string]any{}
+			case "executeCdp":
+				result = map[string]any{
+					"result": map[string]any{
+						"value": map[string]any{
+							"title":      "Example Domain",
+							"url":        "https://example.com",
+							"readyState": "complete",
+							"text":       "Example Domain",
+						},
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"page-info",
+		"--socket", socketPath,
+		"--tab-id", "123",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["title"] != "Example Domain" {
+		t.Fatalf("expected title %q, got %#v", "Example Domain", got["title"])
+	}
+	if got["readyState"] != "complete" {
+		t.Fatalf("expected readyState %q, got %#v", "complete", got["readyState"])
+	}
+}
+
+func TestCobraTextJSONWrapsTextField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result map[string]any
+			switch method {
+			case "attach":
+				result = map[string]any{}
+			case "executeCdp":
+				result = map[string]any{
+					"result": map[string]any{
+						"value": "Example Domain",
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"text",
+		"--socket", socketPath,
+		"--tab-id", "123",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["text"] != "Example Domain" {
+		t.Fatalf("expected text %q, got %#v", "Example Domain", got["text"])
+	}
+}
+
+func TestCobraSnapshotJSONWrapsItemsField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result map[string]any
+			switch method {
+			case "attach":
+				result = map[string]any{}
+			case "executeCdp":
+				result = map[string]any{
+					"result": map[string]any{
+						"value": []any{
+							map[string]any{
+								"index":    1,
+								"tag":      "a",
+								"text":     "Learn more",
+								"type":     "",
+								"href":     "https://iana.org/domains/example",
+								"selector": "",
+							},
+						},
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"snapshot",
+		"--socket", socketPath,
+		"--tab-id", "123",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("expected 1 snapshot item, got %d", len(got.Items))
+	}
+	if got.Items[0]["text"] != "Learn more" {
+		t.Fatalf("expected snapshot text %q, got %#v", "Learn more", got.Items[0]["text"])
+	}
+}
+
+func TestRunActionPlanSupportsTextAndSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	requests := make(chan map[string]any, 10)
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(requests)
+		defer close(serverDone)
+		for i := 0; i < 5; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			requests <- request
+			method, _ := request["method"].(string)
+			var result any = map[string]any{}
+			if method == "executeCdp" {
+				params, _ := request["params"].(map[string]any)
+				commandParams, _ := params["commandParams"].(map[string]any)
+				expression, _ := commandParams["expression"].(string)
+				if strings.Contains(expression, "querySelectorAll") {
+					result = map[string]any{
+						"result": map[string]any{
+							"value": []any{
+								map[string]any{"index": 1, "tag": "a", "text": "Docs", "href": "https://example.com/docs"},
+							},
+						},
+					}
+				} else {
+					result = map[string]any{
+						"result": map[string]any{
+							"value": "Example text",
+						},
+					}
+				}
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", `
+claim-tab 123
+text --max-chars 20
+snapshot --limit 1
+`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 3 {
+		t.Fatalf("expected 3 action steps, got %d", len(got.Steps))
+	}
+	textResult, _ := got.Steps[1].Response["result"].(map[string]any)
+	if textResult["text"] != "Example text" {
+		t.Fatalf("expected text result, got %#v", got.Steps[1].Response)
+	}
+	snapshotResult, _ := got.Steps[2].Response["result"].(map[string]any)
+	items, _ := snapshotResult["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected one snapshot item, got %#v", snapshotResult)
+	}
+}
+
+func TestRunActionPlanSupportsRobustClickAndFill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 5; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result any = map[string]any{}
+			if method == "executeCdp" {
+				params, _ := request["params"].(map[string]any)
+				commandParams, _ := params["commandParams"].(map[string]any)
+				expression, _ := commandParams["expression"].(string)
+				action := "click"
+				if strings.Contains(expression, `action: "fill"`) {
+					action = "fill"
+				}
+				result = map[string]any{
+					"result": map[string]any{
+						"value": map[string]any{
+							"ok":     true,
+							"ref":    "1",
+							"action": action,
+							"tag":    "input",
+							"text":   "Hello",
+						},
+					},
+				}
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", `
+claim-tab 123
+click @1
+fill @1 hello
+`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 3 {
+		t.Fatalf("expected 3 action steps, got %d", len(got.Steps))
+	}
+	clickResult, _ := got.Steps[1].Response["result"].(map[string]any)
+	if clickResult["action"] != "click" || clickResult["ok"] != true {
+		t.Fatalf("expected click result, got %#v", clickResult)
+	}
+	fillResult, _ := got.Steps[2].Response["result"].(map[string]any)
+	if fillResult["action"] != "fill" || fillResult["ok"] != true {
+		t.Fatalf("expected fill result, got %#v", fillResult)
+	}
+}
+
+func TestRunActionPlanSupportsSelectorScreenshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	outputPath := filepath.Join(t.TempDir(), "shot.png")
+	pngData := base64.StdEncoding.EncodeToString([]byte("png"))
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 4; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result any = map[string]any{}
+			if method == "executeCdp" {
+				params, _ := request["params"].(map[string]any)
+				cdpMethod, _ := params["method"].(string)
+				if cdpMethod == "Runtime.evaluate" {
+					result = map[string]any{
+						"result": map[string]any{
+							"value": map[string]any{
+								"ok": true,
+								"clip": map[string]any{
+									"x": 1, "y": 2, "width": 30, "height": 40, "scale": 1,
+								},
+							},
+						},
+					}
+				} else if cdpMethod == "Page.captureScreenshot" {
+					result = map[string]any{"data": pngData}
+				}
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", fmt.Sprintf(`
+claim-tab 123
+screenshot --selector main --output %q
+`, outputPath),
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 2 {
+		t.Fatalf("expected 2 action steps, got %d", len(got.Steps))
+	}
+	result, _ := got.Steps[1].Response["result"].(map[string]any)
+	if result["path"] != outputPath {
+		t.Fatalf("expected screenshot path %q, got %#v", outputPath, result)
+	}
+	if result["bytes"].(float64) != 3 {
+		t.Fatalf("expected byte count 3, got %#v", result["bytes"])
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("expected screenshot file: %v", err)
+	}
+}
+
+func TestCobraHistoryJSONWrapsItemsField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		method, _ := request["method"].(string)
+		if method != "getUserHistory" {
+			_ = conn.Close()
+			serverDone <- fmt.Errorf("unexpected method %q", method)
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result": []any{
+				map[string]any{
+					"title": "Example Domain",
+					"url":   "https://example.com/",
+				},
+			},
+		}); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		_ = conn.Close()
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"history",
+		"--socket", socketPath,
+		"--query", "example",
+		"--limit", "1",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("expected 1 history item, got %d", len(got.Items))
+	}
+	if got.Items[0]["title"] != "Example Domain" {
+		t.Fatalf("expected history title %q, got %#v", "Example Domain", got.Items[0]["title"])
+	}
+}
+
+func TestCobraWaitJSONWrapsReadyStateField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result map[string]any
+			switch method {
+			case "attach":
+				result = map[string]any{}
+			case "executeCdp":
+				result = map[string]any{
+					"result": map[string]any{
+						"value": "complete",
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"wait",
+		"--socket", socketPath,
+		"--tab-id", "123",
+		"--json",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["readyState"] != "complete" {
+		t.Fatalf("expected readyState %q, got %#v", "complete", got["readyState"])
+	}
+}
+
+func TestCobraPingJSONWrapsStatusField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  "pong",
+		}); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		_ = conn.Close()
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"ping", "--socket", socketPath, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "pong" {
+		t.Fatalf("expected status %q, got %#v", "pong", got["status"])
+	}
+}
+
+func TestCobraClaimTabJSONWrapsTabField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result": map[string]any{
+				"id":    123,
+				"title": "Example Domain",
+			},
+		}); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		_ = conn.Close()
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"claim-tab", "--socket", socketPath, "--tab-id", "123", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Tab map[string]any `json:"tab"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Tab["id"] != float64(123) {
+		t.Fatalf("expected claimed tab id 123, got %#v", got.Tab["id"])
+	}
+}
+
+func TestCobraNavigateJSONWrapsNavigateField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result map[string]any
+			switch method {
+			case "attach":
+				result = map[string]any{}
+			case "executeCdp":
+				result = map[string]any{
+					"frameId":    "FRAME-1",
+					"isDownload": false,
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"navigate", "--socket", socketPath, "--tab-id", "123", "--url", "https://example.com", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		Navigate map[string]any `json:"navigate"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Navigate["frameId"] != "FRAME-1" {
+		t.Fatalf("expected navigate frame id %q, got %#v", "FRAME-1", got.Navigate["frameId"])
+	}
+}
+
+func TestCobraFinalizeTabsJSONWrapsOKField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  map[string]any{},
+		}); err != nil {
+			_ = conn.Close()
+			serverDone <- err
+			return
+		}
+		_ = conn.Close()
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"finalize-tabs", "--socket", socketPath, "--keep", "[]", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["ok"] != true {
+		t.Fatalf("expected ok true, got %#v", got["ok"])
 	}
 }
 
@@ -761,6 +1840,9 @@ func TestInvokeWithOptionsUsesSessionID(t *testing.T) {
 	params, _ := request["params"].(map[string]any)
 	if params["session_id"] != "custom-cli-session" {
 		t.Fatalf("expected custom session id, got %#v", params["session_id"])
+	}
+	if params["request_id"] == "" {
+		t.Fatalf("expected request_id, got %#v", params)
 	}
 }
 

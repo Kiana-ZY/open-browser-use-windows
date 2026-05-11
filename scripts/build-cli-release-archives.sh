@@ -10,6 +10,13 @@ fi
 version="$1"
 output_dir="$2"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${repo_root}/scripts/runtime-tools.sh"
+
+go_bin="$(find_go || true)"
+if [[ -z "${go_bin}" ]]; then
+  echo "go is required to build CLI release archives" >&2
+  exit 127
+fi
 
 mkdir -p "${output_dir}"
 
@@ -35,7 +42,7 @@ for target in "${targets[@]}"; do
   (
     cd "${repo_root}"
     CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-      go build -trimpath -ldflags="-s -w" -o "${work_dir}/open-browser-use" ./cmd/open-browser-use
+      run_go "${go_bin}" build -trimpath -ldflags="-s -w" -o "${work_dir}/open-browser-use" ./cmd/open-browser-use
   )
 
   if [ "${tar_supports_gnu_flags}" = true ]; then

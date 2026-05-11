@@ -4,26 +4,31 @@ Read this reference when the task requires multi-step automation, integration in
 
 ## Connection Model
 
-The Chrome extension starts the native host through Chrome Native Messaging. The native host exposes a local socket and writes the active socket registry so the CLI and SDKs can discover it.
+The Chrome/Edge extension starts the native host through Chromium Native
+Messaging. On Windows the native host exposes a localhost TCP relay at
+`127.0.0.1:19832`; on Unix-like systems it exposes a local socket and writes the
+active socket registry so the CLI and SDKs can discover it.
 
 Default route:
 
 ```text
 agent runtime
   -> open-browser-use CLI, MCP server, or SDK
-  -> active Open Browser Use socket
+  -> active Open Browser Use relay
   -> native messaging host
-  -> Chrome extension
-  -> Chrome tabs / debugger / history / downloads
+  -> Chrome/Edge extension
+  -> browser tabs / debugger / history / downloads
 ```
 
-Pass an explicit socket only when the runtime provides one:
+Pass an explicit relay path only when the runtime provides one:
 
 ```sh
-open-browser-use ping --socket /tmp/open-browser-use/example.sock
+open-browser-use ping --socket 127.0.0.1:19832
 ```
 
 For SDKs, create a client with `socketPath` / `socket_path` / `SocketPath`.
+Use `127.0.0.1:19832` on Windows, or the active socket path on Unix-like
+systems.
 
 ## Browser Session Scope
 
@@ -41,7 +46,7 @@ Install the SDK package from the package registry for your runtime:
 ```sh
 npm install open-browser-use-sdk
 pip install open-browser-use-sdk
-go get github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go
+go get github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go
 ```
 
 The Python distribution is named `open-browser-use-sdk`, while the import module
@@ -55,7 +60,7 @@ Use the high-level browser helper for common multi-step flows:
 import { connectOpenBrowserUse } from "open-browser-use-sdk";
 
 const browser = await connectOpenBrowserUse({
-  socketPath: "/tmp/open-browser-use/example.sock",
+  socketPath: "127.0.0.1:19832",
   sessionId: "obu-docs-scan-20260510",
 });
 
@@ -63,8 +68,9 @@ try {
   await browser.client.nameSession("Task - OBU");
   const tab = await browser.newTab();
   await tab.goto("https://example.com", { waitUntil: "domcontentloaded" });
-  const text = await tab.playwright.domSnapshot();
-  console.log(text.slice(0, 4000));
+  const info = await tab.pageInfo({ maxChars: 2000 });
+  const snapshot = await tab.snapshot({ limit: 50 });
+  console.log(info.title, snapshot.items.length);
 } finally {
   await browser.client.finalizeTabs([]);
   browser.close();
@@ -77,7 +83,7 @@ Use the low-level client when you need direct Browser Use JSON-RPC/CDP calls:
 import { OpenBrowserUseClient } from "open-browser-use-sdk";
 
 const client = new OpenBrowserUseClient({
-  socketPath: "/tmp/open-browser-use/example.sock",
+  socketPath: "127.0.0.1:19832",
   sessionId: "obu-docs-scan-20260510",
 });
 
@@ -102,30 +108,22 @@ const unsubscribe = client.onNotification((event) => {
 ## Python SDK Pattern
 
 ```py
-import json
-from pathlib import Path
-
 from open_browser_use import connect_open_browser_use
 
-registry = json.loads(Path("/tmp/open-browser-use/active.json").read_text())
 browser = connect_open_browser_use(
-    socket_path=registry["socketPath"],
+    socket_path="127.0.0.1:19832",
     session_id="obu-issue-scan-20260510",
 )
 
 try:
     browser.client.name_session("Issue scan - OBU")
     tab = browser.new_tab()
-    tab.goto("https://github.com/iFurySt/open-codex-computer-use/issues", wait_until="domcontentloaded")
+    tab.goto("https://github.com/Kiana-ZY/open-browser-use-windows/issues", wait_until="domcontentloaded")
     tab.playwright.wait_for_load_state(state="domcontentloaded", timeout=15)
     tab.playwright.wait_for_timeout(1500)
 
-    text = tab.playwright.locator("body").inner_text(timeout_ms=10000)
-    result = {
-        "title": tab.title(),
-        "url": tab.url(),
-        "text": text[:4000],
-    }
+    result = tab.page_info(max_chars=4000)
+    result["snapshot"] = tab.snapshot(limit=50)
     print(result)
 finally:
     browser.client.finalize_tabs([])
@@ -138,7 +136,7 @@ Use the low-level client when you need raw JSON-RPC/CDP calls:
 from open_browser_use import OpenBrowserUseClient
 
 client = OpenBrowserUseClient(
-    socket_path="/tmp/open-browser-use/example.sock",
+    socket_path="127.0.0.1:19832",
     session_id="obu-docs-scan-20260510",
 )
 
@@ -159,7 +157,7 @@ import (
 	"log"
 	"time"
 
-	obu "github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go"
+	obu "github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go"
 )
 
 func main() {
@@ -190,7 +188,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(title)
+	info, err := tab.PageInfo(obu.TextOptions{MaxChars: 2000})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(title, info.URL)
 }
 ```
 
@@ -198,7 +200,7 @@ Use the low-level client when you need raw JSON-RPC/CDP calls:
 
 ```go
 client := obu.NewClient(obu.Options{
-	SocketPath: "/tmp/open-browser-use/example.sock",
+	SocketPath: "127.0.0.1:19832",
 	SessionID:  "obu-docs-scan-20260510",
 })
 defer client.Close()
@@ -241,6 +243,15 @@ Common Browser Use JSON-RPC methods:
 - `writeClipboard`
 - `turnEnded`
 
+High-level SDK tab helpers mirror the CLI/MCP object protocol:
+
+- JavaScript: `tab.pageInfo`, `tab.text`, `tab.snapshot`, `tab.screenshot`, `tab.click`, `tab.fill`
+- Python: `tab.page_info`, `tab.text_result`, `tab.snapshot`, `tab.screenshot_result`, `tab.click`, `tab.fill`
+- Go: `tab.PageInfo`, `tab.Text`, `tab.Snapshot`, `tab.Screenshot`, `tab.Click`, `tab.Fill`
+
+The older convenience helpers such as `domSnapshot` / `dom_snapshot` and
+locator inner-text remain available for string-first workflows.
+
 CLI unrestricted call:
 
 ```sh
@@ -265,8 +276,13 @@ The action plan format is intentionally small: one action per line, comments
 with `#`, shell-like quotes, shared session/turn, and a default tab set by
 `open-tab` or `claim-tab`. Supported actions include `ping`, `info`, `tabs`,
 `user-tabs`, `history`, `name-session`, `open-tab`, `claim-tab`, `navigate`,
-`wait-load`, `page-info`, `cdp`, `move-mouse`, `wait-file-chooser`,
-`set-file-chooser-files`, `finalize-tabs`, `turn-ended`, and `call`.
+`wait-load`, `page-info`, `text`, `snapshot`, `screenshot`, `click`, `fill`,
+`cdp`, `move-mouse`, `wait-file-chooser`, `set-file-chooser-files`,
+`finalize-tabs`, `turn-ended`, and `call`.
+
+Add `--trace-log <path>` to write a JSONL audit trail for action plans. Each
+entry includes `timestamp`, `sessionId`, `turnId`, `line`, `action`, `risk`,
+`tabId`, `durationMs`, `ok`, and `error` when a step fails.
 
 ## MCP Server
 
@@ -284,13 +300,54 @@ mirror the CLI action surface:
 
 - `ping`, `info`, `tabs`, `user_tabs`, `history`
 - `open_tab`, `claim_tab`, `navigate`, `wait_load`, `page_info`
+- `text`, `snapshot`, `screenshot`, `click`, `fill`
 - `cdp`, `move_mouse`, `wait_file_chooser`, `set_file_chooser_files`
 - `name_session`, `finalize_tabs`, `turn_ended`, `call`, `run_action_plan`
 
 Pass `--socket` or `--socket-dir` in the MCP `args` only when the runtime needs
-an explicit Open Browser Use socket. Otherwise the server uses the same socket
+an explicit Open Browser Use relay. Otherwise the server uses the same relay
 discovery as the CLI. Pass a fresh `--session-id` for each agent task or
 conversation.
+
+Pass `--trace-log <path>` in the MCP `args` to trace direct MCP tool calls with
+the same JSONL format as action plans. The `run_action_plan` MCP tool writes
+per-action trace rows through the runner and does not add a duplicate wrapper
+row.
+
+For the common agent-facing paths, prefer the same stable object shapes from
+both CLI `--json` and MCP `structuredContent`:
+
+- `ping` -> `{ "status": "pong" }`
+- `tabs` / `user_tabs` / `history` -> `{ "items": [...] }`
+- `open_tab` -> `{ "tab": ..., "navigate": ...? }`
+- `claim_tab` -> `{ "tab": ... }`
+- `navigate` -> `{ "navigate": ... }`
+- `page_info` -> `{ "title": ..., "url": ..., "readyState": ..., "text": ... }`
+- `text` -> `{ "text": ... }`
+- `snapshot` -> `{ "items": [...] }`
+- `screenshot` -> `{ "path": ..., "bytes": ..., "format": "png", "clip": ...? }`
+- `click` / `fill` -> `{ "ok": true, "action": ..., "ref": ... }`
+- `wait_load` -> `{ "readyState": ... }`
+- `name_session` / `finalize_tabs` / `turn_ended` -> `{ "ok": true }`
+
+This keeps agent integrations from branching on transport-specific wrappers.
+
+## Observability And Risk Labels
+
+The CLI and MCP server add `request_id` to browser JSON-RPC params when callers
+do not provide one. Action plans and traced MCP tools also label actions:
+
+- `read`: `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait-load`, `page-info`, `text`, `snapshot`, `screenshot`
+- `navigation`: `open-tab`, `claim-tab`, `navigate`
+- `interaction`: `click`, `fill`, `move-mouse`
+- `file-system`: `set-file-chooser-files`
+- `session`: `name-session`, `turn-ended`, `finalize-tabs`
+- `unrestricted`: `cdp`, `call`
+
+OBU records these labels for auditing and debugging. Higher-level runtimes are
+still responsible for confirmation policy, especially before uploads, downloads,
+clipboard access, form submission, purchases, deletion, external message
+sending, or unrestricted CDP/RPC calls with side effects.
 
 SDK request escape hatch:
 

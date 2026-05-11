@@ -10,27 +10,33 @@ zip_path="${dist_dir}/${skill_name}-skill.zip"
 skill_path="${dist_dir}/${skill_name}.skill"
 manifest_path="${dist_dir}/package-manifest.json"
 
-if ! command -v node >/dev/null 2>&1; then
+source "${repo_root}/scripts/runtime-tools.sh"
+
+node_bin="$(find_node || true)"
+if [[ -z "${node_bin}" ]]; then
   echo "node is required to validate the skill package" >&2
   exit 1
 fi
 
-if ! command -v zip >/dev/null 2>&1; then
-  echo "zip is required to package the skill" >&2
-  exit 1
-fi
+zip_directory_contents() {
+  local source_dir="$1"
+  local output_path="$2"
 
-if ! command -v unzip >/dev/null 2>&1; then
-  echo "unzip is required to validate the skill package" >&2
-  exit 1
-fi
+  "${node_bin}" "${repo_root}/scripts/zip-tool.mjs" create "${source_dir}" "${output_path}"
+}
+
+list_zip_entries() {
+  local archive_path="$1"
+
+  "${node_bin}" "${repo_root}/scripts/zip-tool.mjs" list "${archive_path}"
+}
 
 if [[ ! -f "${skill_dir}/SKILL.md" ]]; then
   echo "missing skill entrypoint: ${skill_dir}/SKILL.md" >&2
   exit 1
 fi
 
-node - "${skill_dir}/SKILL.md" <<'NODE'
+"${node_bin}" - "${skill_dir}/SKILL.md" <<'NODE'
 const fs = require("fs");
 
 const skillPath = process.argv[2];
@@ -57,14 +63,15 @@ NODE
 
 rm -rf "${dist_dir}"
 mkdir -p "${dist_dir}"
+staging_dir="${dist_dir}/skill-staging"
+mkdir -p "${staging_dir}"
+cp -R "${skill_dir}" "${staging_dir}/${skill_name}"
 
-(
-  cd "${repo_root}/skills"
-  zip -q -r "${zip_path}" "${skill_name}"
-)
+zip_directory_contents "${staging_dir}" "${zip_path}"
+rm -rf "${staging_dir}"
 cp "${zip_path}" "${skill_path}"
 
-node - "${zip_path}" "${skill_path}" "${manifest_path}" <<'NODE'
+"${node_bin}" - "${zip_path}" "${skill_path}" "${manifest_path}" <<'NODE'
 const crypto = require("crypto");
 const fs = require("fs");
 
@@ -111,7 +118,7 @@ while IFS= read -r entry; do
   if [[ "${entry}" == "${skill_name}/SKILL.md" ]]; then
     has_skill_entrypoint=1
   fi
-done < <(unzip -Z1 "${zip_path}")
+done < <(list_zip_entries "${zip_path}")
 
 if [[ "${entry_count}" -eq 0 ]]; then
   echo "skill zip is empty" >&2

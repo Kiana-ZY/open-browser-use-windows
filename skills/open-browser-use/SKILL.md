@@ -1,6 +1,6 @@
 ---
 name: open-browser-use
-description: Browser automation through the user's real Edge/Chrome browser. Supports real browser tabs, user tab claiming, CDP commands, element interaction via snapshot refs, downloads, file choosers, clipboard helpers, and session cleanup.
+description: Use when the user mentions `@obu`, `@open-browser-use`, `@real-browser`, asks to use Open Browser Use, or needs a fallback when Codex app Browser cannot start. Browser automation through the user's real Edge/Chrome browser. Supports low-token page-info/text/snapshot extraction, screenshots, element interaction via snapshot refs, downloads, file choosers, clipboard helpers, and session cleanup.
 ---
 
 # Open Browser Use
@@ -31,6 +31,28 @@ obu wait
 
 After bootstrap, `OBU_TAB_ID` is set — `snapshot`, `text`, `click`, `fill`, `wait`, `screenshot` all use it automatically.
 
+Use `obu page-info --json` when you want a compact page summary with title, URL,
+ready state, and body text in one call. Use `obu text --json` when you only
+need raw page text.
+
+For long or link-heavy pages, keep extraction bounded:
+
+```cmd
+obu text --selector main --max-chars 2000 --json
+obu page-info --max-chars 2000 --json
+obu snapshot --limit 50 --json
+```
+
+For auditable multi-step browser work, add a trace log to an action plan:
+
+```cmd
+obu run --trace-log trace.jsonl -c "ping"
+```
+
+Each JSONL row records the session, turn, action, risk class, tab id, duration,
+and success/error status. `obu mcp --trace-log trace.jsonl` records the same
+trace format for direct MCP tool calls.
+
 ## Page Interaction
 
 ### Snapshot → click/fill (preferred)
@@ -47,17 +69,31 @@ REM   @3 input "Password"
 REM   @4 a "Sign up"
 
 REM Interact using refs
-obu click @1
-obu fill @2 "admin"
-obu fill @3 "pass123"
+obu click @1 --json
+obu fill @2 "admin" --json
+obu fill @3 "pass123" --json
 ```
+
+`click --json` and `fill --json` return `{ "ok": true, "action": ..., "ref": ... }`
+on success. On failure they include a `reason` such as `not-found`,
+`disabled`, `not-visible`, or `not-fillable`; take a fresh snapshot before
+retrying.
 
 ### Read text
 
 When you just need to extract page content — no interaction needed:
 
 ```cmd
-obu text --json
+obu text --max-chars 2000 --json
+```
+
+### Read page summary
+
+When you want a small machine-readable page summary instead of only the body
+text:
+
+```cmd
+obu page-info --max-chars 2000 --json
 ```
 
 ### Decision: snapshot vs text vs cdp
@@ -65,10 +101,11 @@ obu text --json
 | Situation | Use |
 |-----------|-----|
 | Need to click, fill, or find elements | `obu snapshot` then `click @N` / `fill @N` |
+| Need title, URL, ready state, and text together | `obu page-info --json` |
 | Just need page text content | `obu text --json` |
 | Need specific data (title, URL, attribute) | `obu cdp --method Runtime.evaluate ...` |
 | Multi-step workflow | `obu run` action plan |
-| Screenshot for visual check | `obu screenshot --output file.png` |
+| Screenshot for visual check | `obu screenshot --output file.png --json` |
 
 ### Snapshot Discipline
 
@@ -87,11 +124,16 @@ obu text --json
 | `obu open-tab --url URL` | Open new tab → returns tab id |
 | `obu claim-tab --tab-id ID` | Take over existing user tab |
 | `obu navigate --tab-id ID --url URL` | Go to URL in tab |
+| `obu page-info --json` | Get title, URL, ready state, and page body text |
+| `obu text --selector CSS --max-chars N --json` | Get bounded page or selector text |
+| `obu snapshot --limit N --json` | Get a bounded interactive element list |
 | `obu snapshot` | List interactive elements with @N refs |
-| `obu click @N` | Click element by ref |
-| `obu fill @N TEXT` | Type into input by ref |
+| `obu click @N --json` | Click element by ref and return action status |
+| `obu fill @N TEXT --json` | Fill element by ref and return action status |
 | `obu text --json` | Get page body text |
-| `obu screenshot --output file.png` | Screenshot to file |
+| `obu screenshot --output file.png --json` | Screenshot current viewport |
+| `obu screenshot --selector CSS --output file.png --json` | Screenshot one element |
+| `obu screenshot --full-page --output file.png --json` | Screenshot the full page |
 | `obu wait` | Wait for page readyState complete |
 | `obu history --query "..."` | Search browser history |
 | `obu cdp --method M --params JSON` | Raw CDP (last resort) |
@@ -99,6 +141,42 @@ obu text --json
 | `obu run -c "..."` | Multi-step action plan |
 
 All commands accept `--json` for machine-readable output and respect `OBU_SESSION_ID` / `OBU_TAB_ID` env vars.
+
+For the common read paths, prefer these stable `--json` shapes:
+
+- `obu page-info --json` -> title, URL, ready state, and body text
+- `obu text --json` -> `{ "text": ... }`
+- `obu snapshot --json` -> `{ "items": [...] }`
+- `obu screenshot --json` -> `{ "path": ..., "bytes": ..., "format": "png", "clip": ...? }`
+- `obu history --json` -> `{ "items": [...] }`
+- `obu wait --json` -> `{ "readyState": ... }`
+
+For common action paths, prefer these stable `--json` shapes:
+
+- `obu ping --json` -> `{ "status": "pong" }`
+- `obu claim-tab --json` -> `{ "tab": ... }`
+- `obu navigate --json` -> `{ "navigate": ... }`
+- `obu name-session --json` -> `{ "ok": true }`
+- `obu finalize-tabs --json` -> `{ "ok": true }`
+- `obu turn-ended --json` -> `{ "ok": true }`
+
+## Risk Labels
+
+OBU labels traced actions so the surrounding agent runtime can decide whether
+to ask for confirmation:
+
+| Risk | Actions |
+|------|---------|
+| `read` | `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait`, `page-info`, `text`, `snapshot`, `screenshot` |
+| `navigation` | `open-tab`, `claim-tab`, `navigate` |
+| `interaction` | `click`, `fill`, `move-mouse` |
+| `file-system` | `set-file-chooser-files` |
+| `session` | `name-session`, `turn-ended`, `finalize-tabs` |
+| `unrestricted` | `cdp`, `call` |
+
+Treat `interaction`, `file-system`, and `unrestricted` actions as sensitive
+when they could submit, upload, delete, purchase, send, or expose private data.
+The CLI records the label but does not enforce confirmation for you.
 
 ## Error Recovery
 

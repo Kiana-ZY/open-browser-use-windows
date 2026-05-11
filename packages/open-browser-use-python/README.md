@@ -38,6 +38,14 @@ try:
     tab = browser.new_tab()
     tab.goto("https://example.com", wait_until="domcontentloaded")
     print(tab.title())
+
+    info = tab.page_info(max_chars=2000)
+    text = tab.text_result(selector="main", max_chars=2000)
+    snapshot = tab.snapshot(limit=50)
+    screenshot = tab.screenshot_result(selector="main")
+
+    tab.click("@1")
+    tab.fill("@2", "hello")
 finally:
     browser.client.finalize_tabs([])
     browser.close()
@@ -45,3 +53,7 @@ finally:
 
 Use `OpenBrowserUseClient` directly when you need raw Browser Use JSON-RPC or
 CDP methods.
+
+The structured helpers mirror CLI `--json` and MCP `structuredContent`:
+`page_info`, `text_result`, `snapshot`, `screenshot_result`, `click`, and
+`fill`. The legacy convenience `tab.text()` still returns a string.

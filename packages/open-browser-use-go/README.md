@@ -7,7 +7,7 @@ higher-level browser/tab helpers for common agent workflows.
 ## Installation
 
 ```sh
-go get github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go
+go get github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go
 ```
 
 The SDK expects the `open-browser-use` CLI and Chrome extension to already be
@@ -28,7 +28,7 @@ import (
 	"log"
 	"time"
 
-	obu "github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go"
+	obu "github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go"
 )
 
 func main() {
@@ -64,8 +64,24 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(title)
+
+	info, err := tab.PageInfo(obu.TextOptions{MaxChars: 2000})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(info.URL)
+
+	snapshot, err := tab.Snapshot(50)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(len(snapshot.Items))
 }
 ```
 
 Use `Client.Request(method, params)` when you need an unrestricted Browser Use
 JSON-RPC call, or `Client.ExecuteCDP` / `Browser.CDP.Call` for raw CDP commands.
+
+Structured helpers mirror CLI `--json` and MCP `structuredContent`:
+`PageInfo`, `Text`, `Snapshot`, `Screenshot`, `Click`, and `Fill`. The
+Playwright-style alias on `tab.Playwright` exposes the same helpers.

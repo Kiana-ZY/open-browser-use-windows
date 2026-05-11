@@ -1,7 +1,7 @@
 # Chrome Web Store 发布
 
-这份文档记录 Open Browser Use Chrome extension 的打包、GitHub Release 产物
-和 Chrome Web Store 自动提交审核流程。
+这份文档记录 Open Browser Use for Windows Chromium extension 的打包、
+GitHub Release 产物和 Chrome Web Store 自动提交审核流程。
 
 ## 当前发布边界
 
@@ -29,6 +29,7 @@ Chrome Web Store 条目仍在审核时，用 GitHub Release zip 的 unpacked 路
 
 ```bash
 open-browser-use setup beta
+open-browser-use setup beta --browser edge
 ```
 
 `setup beta` 会下载最新 release zip。审核期 release zip 本身已经写入稳定
@@ -55,6 +56,10 @@ pnpm package:chrome-extension
 - manifest 必须声明 `16`、`32`、`48`、`128` 四个 PNG icons，并把 toolbar
   action icon 指向 `16` 和 `32` 图标。
 - `background.js`、`content-cursor.js`、`popup.js` 必须通过 `node --check`。
+
+在 Windows/WSL 环境中，脚本会优先使用 PATH 里的 `node`，也会检查常见的
+Windows / WSL Node 安装路径。ZIP 产物由仓库内 `scripts/zip-tool.mjs` 生成，
+因此不要求本机额外安装 Unix `zip` / `unzip`。
 
 输出文件：
 

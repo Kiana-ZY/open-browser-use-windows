@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { endianness, tmpdir } from "node:os";
-import { join } from "node:path";
+import { endianness } from "node:os";
 import test from "node:test";
 
 import { OpenBrowserUseClient, connectOpenBrowserUse, encodeFrame } from "../dist/index.js";
@@ -18,8 +16,6 @@ test("encodes native-endian length-prefixed JSON frames", () => {
 });
 
 test("dispatches JSON-RPC notifications from the native socket", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "obu-sdk-js-"));
-  const socketPath = join(directory, "obu.sock");
   const server = createServer((socket) => {
     socket.write(
       encodeFrame({
@@ -29,10 +25,7 @@ test("dispatches JSON-RPC notifications from the native socket", async () => {
       })
     );
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, resolve);
-  });
+  const socketPath = await listenTestServer(server);
 
   const client = new OpenBrowserUseClient({ socketPath });
   try {
@@ -48,13 +41,10 @@ test("dispatches JSON-RPC notifications from the native socket", async () => {
     client.close();
     server.close();
     await new Promise((resolve) => server.once("close", resolve));
-    await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("high-level browser tabs can goto, wait for load state, and read a DOM snapshot", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "obu-sdk-js-"));
-  const socketPath = join(directory, "obu.sock");
   const calls = [];
   const server = createServer((socket) => {
     let pending = Buffer.alloc(0);
@@ -94,10 +84,7 @@ test("high-level browser tabs can goto, wait for load state, and read a DOM snap
       }
     });
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, resolve);
-  });
+  const socketPath = await listenTestServer(server);
 
   const browser = await connectOpenBrowserUse({ socketPath });
   try {
@@ -118,13 +105,104 @@ test("high-level browser tabs can goto, wait for load state, and read a DOM snap
     browser.close();
     server.close();
     await new Promise((resolve) => server.once("close", resolve));
-    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("high-level browser tabs expose structured read, screenshot, and interaction helpers", async () => {
+  const calls = [];
+  const pngData = Buffer.from("png").toString("base64");
+  const server = createServer((socket) => {
+    let pending = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      pending = Buffer.concat([pending, chunk]);
+      while (pending.length >= 4) {
+        const length = endianness() === "LE" ? pending.readUInt32LE(0) : pending.readUInt32BE(0);
+        if (pending.length < 4 + length) {
+          return;
+        }
+        const request = JSON.parse(pending.subarray(4, 4 + length).toString("utf8"));
+        pending = pending.subarray(4 + length);
+        const method = request.method;
+        const cdpMethod = request.params.method ?? null;
+        const expression = request.params.commandParams?.expression ?? "";
+        calls.push([method, cdpMethod]);
+        let result = {};
+        if (method === "executeCdp" && cdpMethod === "Runtime.evaluate") {
+          if (expression.includes("document.title")) {
+            result = {
+              result: {
+                value: {
+                  title: "Example",
+                  url: "https://example.test",
+                  readyState: "complete",
+                  text: "Hello"
+                }
+              }
+            };
+          } else if (expression.includes("__obu_refs")) {
+            result = {
+              result: {
+                value: [{ index: 1, tag: "button", text: "Save", type: "", href: "", selector: "#save" }]
+              }
+            };
+          } else if (expression.includes('action: "click"')) {
+            result = {
+              result: { value: { ok: true, ref: "1", action: "click", tag: "button", text: "Save" } }
+            };
+          } else if (expression.includes('action: "fill"')) {
+            result = {
+              result: { value: { ok: true, ref: "2", action: "fill", tag: "input", text: "hello", valueLength: 5 } }
+            };
+          } else {
+            result = { result: { value: "Hello" } };
+          }
+        } else if (method === "executeCdp" && cdpMethod === "Page.captureScreenshot") {
+          result = { data: pngData };
+        }
+        socket.write(encodeFrame({ jsonrpc: "2.0", id: request.id, result }));
+      }
+    });
+  });
+  const socketPath = await listenTestServer(server);
+
+  const browser = await connectOpenBrowserUse({ socketPath });
+  try {
+    const tab = browser.tab(123);
+    assert.deepEqual(await tab.pageInfo({ maxChars: 5 }), {
+      title: "Example",
+      url: "https://example.test",
+      readyState: "complete",
+      text: "Hello"
+    });
+    assert.deepEqual(await tab.text({ selector: "main", maxChars: 5 }), { text: "Hello" });
+    assert.deepEqual(await tab.snapshot({ limit: 1 }), {
+      items: [{ index: 1, tag: "button", text: "Save", type: "", href: "", selector: "#save" }]
+    });
+    assert.deepEqual(await tab.screenshot(), {
+      data: pngData,
+      bytes: 3,
+      format: "png",
+      tabId: 123
+    });
+    assert.equal((await tab.click("@1")).action, "click");
+    assert.equal((await tab.fill("@2", "hello")).valueLength, 5);
+    assert.deepEqual(calls, [
+      ["attach", null],
+      ["executeCdp", "Runtime.evaluate"],
+      ["executeCdp", "Runtime.evaluate"],
+      ["executeCdp", "Runtime.evaluate"],
+      ["executeCdp", "Page.captureScreenshot"],
+      ["executeCdp", "Runtime.evaluate"],
+      ["executeCdp", "Runtime.evaluate"]
+    ]);
+  } finally {
+    browser.close();
+    server.close();
+    await new Promise((resolve) => server.once("close", resolve));
   }
 });
 
 test("sends file chooser wrapper requests", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "obu-sdk-js-"));
-  const socketPath = join(directory, "obu.sock");
   const server = createServer((socket) => {
     socket.once("data", (chunk) => {
       const length = endianness() === "LE" ? chunk.readUInt32LE(0) : chunk.readUInt32BE(0);
@@ -140,10 +218,7 @@ test("sends file chooser wrapper requests", async () => {
       );
     });
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, resolve);
-  });
+  const socketPath = await listenTestServer(server);
 
   const client = new OpenBrowserUseClient({ socketPath });
   try {
@@ -155,13 +230,10 @@ test("sends file chooser wrapper requests", async () => {
     client.close();
     server.close();
     await new Promise((resolve) => server.once("close", resolve));
-    await rm(directory, { recursive: true, force: true });
   }
 });
 
 test("sends download and clipboard wrapper requests", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "obu-sdk-js-"));
-  const socketPath = join(directory, "obu.sock");
   const expected = [
     ["waitForDownload", { tabId: 123, timeoutMs: 5000 }],
     ["downloadPath", { downloadId: "download-1" }],
@@ -182,10 +254,7 @@ test("sends download and clipboard wrapper requests", async () => {
       socket.write(encodeFrame({ jsonrpc: "2.0", id: request.id, result: {} }));
     });
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, resolve);
-  });
+  const socketPath = await listenTestServer(server);
 
   const client = new OpenBrowserUseClient({ socketPath });
   try {
@@ -198,6 +267,15 @@ test("sends download and clipboard wrapper requests", async () => {
     client.close();
     server.close();
     await new Promise((resolve) => server.once("close", resolve));
-    await rm(directory, { recursive: true, force: true });
   }
 });
+
+async function listenTestServer(server) {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  return `${address.address}:${address.port}`;
+}

@@ -1,7 +1,7 @@
 {
   "name": "open-browser-use",
-  "version": "0.1.26",
-  "description": "Open Browser Use native host and CLI binary.",
+  "version": "0.1.29",
+  "description": "Open Browser Use for Windows native host and CLI binary.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -15,17 +15,17 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iFurySt/open-codex-browser-use.git",
+    "url": "git+https://github.com/Kiana-ZY/open-browser-use-windows.git",
     "directory": "packages/open-browser-use-cli"
   },
   "bugs": {
-    "url": "https://github.com/iFurySt/open-codex-browser-use/issues"
+    "url": "https://github.com/Kiana-ZY/open-browser-use-windows/issues"
   },
-  "homepage": "https://github.com/iFurySt/open-codex-browser-use#readme",
+  "homepage": "https://github.com/Kiana-ZY/open-browser-use-windows#readme",
   "scripts": {
     "postinstall": "node cli/postinstall.js",
-    "prepack": "../../scripts/build-npm-cli-package.sh",
-    "test": "../../scripts/build-npm-cli-package.sh && node cli/open-browser-use.js version"
+    "prepack": "bash ../../scripts/build-npm-cli-package.sh",
+    "test": "bash ../../scripts/build-npm-cli-package.sh && node cli/open-browser-use.js version"
   },
   "engines": {
     "node": ">=18"

@@ -1,6 +1,7 @@
 # Open Browser Use Troubleshooting
 
-Read this reference when setup, connection, browser control, file upload, download, or socket discovery fails.
+Read this reference when setup, connection, browser control, file upload,
+download, or relay discovery fails.
 
 ## First Checks
 
@@ -25,18 +26,19 @@ If these fail:
 
 Do not silently install, enable, or repair browser integration when the action needs user approval.
 
-## Stale Socket Or Missing Active Host
+## Stale Relay Or Missing Active Host
 
-The CLI first discovers the active socket from the registry. If the registry is
-missing, recent CLI versions scan `--socket-dir` for `*.sock` files and connect
-to the newest usable socket, then repair the registry. If the registry points to
-a stale socket, the CLI removes the stale entry and stale socket file, then tries
-the same socket-dir scan.
+On Windows, the CLI connects to the default TCP relay at `127.0.0.1:19832`.
+On Unix-like systems, the CLI first discovers the active socket from the
+registry. If the registry is missing, recent CLI versions scan `--socket-dir`
+for `*.sock` files and connect to the newest usable socket, then repair the
+registry. If the registry points to a stale socket, the CLI removes the stale
+entry and stale socket file, then tries the same socket-dir scan.
 
 Useful flags:
 
 ```sh
-open-browser-use ping --socket /tmp/open-browser-use/example.sock
+open-browser-use ping --socket 127.0.0.1:19832
 open-browser-use ping --socket-dir /tmp/open-browser-use
 open-browser-use ping --timeout 20s
 ```

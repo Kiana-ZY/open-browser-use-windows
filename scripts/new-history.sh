@@ -9,11 +9,11 @@ fi
 
 slug="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-month_dir="${repo_root}/docs/histories/$(date +%Y-%m)"
+month_dir="${repo_root}/archive/process/docs/histories/$(date +%Y-%m)"
 timestamp="$(date +%Y%m%d-%H%M)"
 target="${month_dir}/${timestamp}-${slug}.md"
 
 mkdir -p "${month_dir}"
-cp "${repo_root}/docs/histories/template.md" "${target}"
+cp "${repo_root}/archive/process/docs/histories/template.md" "${target}"
 
 echo "${target}"

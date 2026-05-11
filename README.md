@@ -1,121 +1,155 @@
-# Open Browser Use — Windows & Edge
+# Open Browser Use for Windows
 
-[原项目](https://github.com/iFurySt/open-codex-browser-use) 面向 macOS/Linux + Chrome。本项目进行了完整的 **Windows 适配**，新增 **Microsoft Edge** 支持。
+Open Browser Use for Windows is a Windows-first build of Open Browser Use. It
+connects a Chromium extension, a local Go native host, and CLI/SDK/MCP clients
+so agents can control the user's real Chrome or Microsoft Edge profile.
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+The command name stays `open-browser-use`, with `obu` as the short alias.
 
-## 改动
+## What This Fork Focuses On
 
-| 模块 | 改动 |
-|------|------|
-| **中继传输** | Unix 域套接字 → TCP `127.0.0.1:19832` |
-| **Edge 支持** | `setup` / `setup beta` / `install-manifest` 增加 `--browser edge` |
-| **注册表** | setup 时自动写入 Edge 注册表键 |
-| **连接发现** | Windows 跳过 socket 文件扫描，直连 TCP |
-| **Python SDK** | Named Pipe → TCP socket |
-| **错误信息** | 修正 named-pipe 等误导性提示 |
+| Area | Windows support |
+| --- | --- |
+| Browser support | Chrome and Microsoft Edge |
+| Native host | `open-browser-use.exe` launched by Chrome/Edge Native Messaging |
+| Client transport | TCP relay on `127.0.0.1:19832` for Windows |
+| Agent access | CLI, MCP server, JavaScript SDK, Python SDK, Go SDK, and skill docs |
+| Setup helpers | `setup`, `setup beta`, and `install-manifest` support `--browser edge` |
 
-## 架构
+## Architecture
 
-```
-Edge / Chrome 扩展 (MV3)
-    │  stdio (Native Messaging)
-    ▼
-Native Host 中继 (open-browser-use.exe)
-    │  TCP 127.0.0.1:19832 (Windows)
-    │  Unix Socket (macOS / Linux)
-    ▼
-CLI / Python SDK / Go SDK
+```text
+Chrome / Edge MV3 extension
+  -> Native Messaging stdio
+  -> open-browser-use.exe
+  -> TCP 127.0.0.1:19832 on Windows
+  -> CLI / MCP / JS SDK / Python SDK / Go SDK
 ```
 
-## 快速开始
+## Build
 
-### 编译
-
-```bash
-go build -o open-browser-use.exe ./cmd/open-browser-use/
+```powershell
+go build -o open-browser-use.exe ./cmd/open-browser-use
 ```
 
-### 安装到 Edge
+## Install The Browser Integration
 
-```bash
+For Edge:
+
+```powershell
 .\open-browser-use.exe setup beta --browser edge
 ```
 
-在 `edge://extensions/` 开启**开发者模式**，将下载的 ZIP 拖入页面安装扩展。
+For Chrome:
 
-### 验证
+```powershell
+.\open-browser-use.exe setup beta --browser chrome
+```
+
+The setup command opens the browser extension page and reveals the extension ZIP.
+Enable Developer mode, then drag the ZIP into the extensions page.
+
+## Verify
+
+```powershell
+.\open-browser-use.exe version
+.\open-browser-use.exe ping --json
+.\open-browser-use.exe info --json
+```
+
+When installed globally, the same checks are:
+
+```powershell
+obu version
+obu ping --json
+obu info --json
+```
+
+## Common Commands
+
+Use one unique session id per task.
+
+```powershell
+$env:OBU_SESSION_ID = "obu-task-$(Get-Date -Format yyyyMMddHHmmss)"
+obu name-session --name "Task - OBU"
+obu open-tab --url https://github.com/trending --json
+obu page-info --max-chars 2000 --json
+obu snapshot --limit 50 --json
+obu finalize-tabs --keep "[]" --json
+```
+
+Useful commands:
+
+| Command | Purpose |
+| --- | --- |
+| `obu ping --json` | Connectivity check |
+| `obu info --json` | Extension and native host metadata |
+| `obu user-tabs --json` | List all browser tabs |
+| `obu open-tab --url URL --json` | Open a managed task tab |
+| `obu claim-tab --tab-id ID --json` | Claim an existing user tab |
+| `obu page-info --max-chars N --json` | Compact title, URL, ready state, and text |
+| `obu snapshot --limit N --json` | Bounded interactive element list |
+| `obu click @1 --json` | Click a snapshot ref |
+| `obu fill @2 "text" --json` | Fill a snapshot ref |
+| `obu screenshot --output file.png --json` | Capture a screenshot |
+| `obu run -c "..."` | Run a small action plan |
+| `obu mcp` | Start the stdio MCP server |
+
+## SDKs
+
+JavaScript/TypeScript:
 
 ```bash
-obu info
+npm install open-browser-use-sdk
 ```
 
-## CLI 命令
+Python:
 
-所有命令需带 `--session-id`，每个任务用一个唯一 ID。
-
-| 命令 | 说明 |
-|------|------|
-| `obu info` | 扩展版本和元数据 |
-| `obu ping` | 连通性检查 |
-| `obu user-tabs` | 列出所有标签页 |
-| `obu tabs` | 列出会话标签页 |
-| `obu open-tab --url URL --session-id ID` | 打开新标签页 |
-| `obu claim-tab --tab-id ID --session-id ID` | 认领已有标签页 |
-| `obu navigate --tab-id ID --url URL --session-id ID` | 导航 |
-| `obu cdp --tab-id ID --method M --params JSON --session-id ID` | CDP 命令 |
-| `obu history --query "..." --limit N --session-id ID` | 搜索历史 |
-| `obu finalize-tabs --keep JSON --session-id ID` | 关闭/移交会话标签页 |
-
-```cmd
-SET OBU_SESSION_ID=obu-task-20260511
-obu open-tab --session-id %OBU_SESSION_ID% --url https://github.com/trending
-obu cdp --session-id %OBU_SESSION_ID% --tab-id <id> --method Runtime.evaluate --params "{\"expression\":\"document.title\"}"
-obu finalize-tabs --session-id %OBU_SESSION_ID% --keep "[]"
+```bash
+pip install open-browser-use-sdk
 ```
 
-## SDK
+Go:
 
-### Python
-
-```python
-from open_browser_use import OpenBrowserUseClient
-
-client = OpenBrowserUseClient(socket_path="")  # Windows 上忽略
-browser = client.connect()
-tab = browser.new_tab("https://example.com")
-print(tab.title())
-browser.close()
+```bash
+go get github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go
 ```
 
-### Go
+## Agent Skill
 
-```go
-import obu "github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go"
+The reusable agent skill lives in `skills/open-browser-use/`. It is designed for
+Codex, Claude Code, and other shell-first agent runtimes. The trigger alias is
+`@obu`; the CLI alias remains `obu`.
 
-browser, _ := obu.ConnectActive(obu.Options{})
-defer browser.Close()
-result, _ := browser.Client.GetInfo()
-```
+See `docs/CODEX_AND_CLAUDE_USAGE.md` for Codex and Claude Code MCP examples.
 
-## AI Agent Skill
+## Repository Layout
 
-Skill 文件在 `skills/open-browser-use/`，支持 Claude Code 和 Codex：
+| Path | Purpose |
+| --- | --- |
+| `apps/chrome-extension/` | MV3 extension for Chrome and Edge |
+| `cmd/open-browser-use/` | Go CLI, native host, and MCP server |
+| `internal/host/` | Native host relay and Windows TCP transport |
+| `internal/wire/` | Native messaging frame codec |
+| `packages/open-browser-use-cli/` | npm CLI package with `open-browser-use` and `obu` |
+| `packages/open-browser-use-js/` | JavaScript/TypeScript SDK |
+| `packages/open-browser-use-python/` | Python SDK |
+| `packages/open-browser-use-go/` | Go SDK |
+| `skills/open-browser-use/` | Agent-facing usage instructions |
+| `archive/` | Non-core research, process history, and local snapshots |
 
-```
-.claude/skills/open-browser-use/     # Claude Code
-~/.codex/skills/open-browser-use/    # Codex
-```
+## Archive
 
-## 故障排除
+The `archive/` directory keeps material that is useful for provenance but not
+needed for the Windows runtime itself:
 
-| 症状 | 处理 |
-|------|------|
-| `TCP relay not available` | 重启 Edge |
-| `Specified native messaging host not found` | `obu install-manifest --browser edge` |
-| 命令超时 | 点击 Edge 工具栏中的扩展图标 |
-| 端口 19832 连接被拒 | 主机进程已退出，重启 Edge |
+- `archive/process/` stores execution plans, histories, old template docs, and
+  the previous standalone HTML guide.
+- `archive/research/` stores reverse-engineering notes, generated metadata, and
+  research-only packages.
+- `archive/local-agent-snapshots/` stores copied local agent skill snapshots.
 
-## 许可证
+## License
 
-基于 [iFurySt/open-codex-browser-use](https://github.com/iFurySt/open-codex-browser-use) 修改，Apache 2.0。
+MIT. This project is derived from the upstream Open Browser Use work and adapted
+for a Windows-first Chrome/Edge workflow.

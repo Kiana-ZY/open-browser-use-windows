@@ -17,13 +17,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 )
 
 const NativeHostName = "com.ifuryst.open_browser_use.extension"
 const TCPPort = 19832
 
-// DefaultSocketDir is now a function that returns platform-specific path
+// DefaultSocketDir returns the platform-specific relay registry directory.
 func DefaultSocketDir() string {
 	return defaultSocketDir()
 }
@@ -97,7 +97,8 @@ func (r *Relay) SocketPath() string {
 func (r *Relay) Serve(ctx context.Context) error {
 	socketPath := r.SocketPath()
 
-	// On Windows, we use Named Pipes, so skip file operations
+	// On Windows, the relay uses a fixed localhost TCP listener, so skip
+	// Unix socket file operations.
 	if runtime.GOOS != "windows" {
 		if err := mkdirAll(filepath.Dir(socketPath)); err != nil {
 			return err

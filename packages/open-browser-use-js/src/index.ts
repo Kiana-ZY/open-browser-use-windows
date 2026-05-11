@@ -12,7 +12,7 @@ export type JsonValue =
 export type BrowserUseRequestParams = { [key: string]: JsonValue };
 
 export type OpenBrowserUseClientOptions = {
-  socketPath: string;
+  socketPath?: string;
   sessionId?: string;
   turnId?: string;
   timeoutMs?: number;
@@ -32,6 +32,7 @@ export type OpenBrowserUseNotification = {
 export type NotificationHandler = (notification: OpenBrowserUseNotification) => void;
 
 const headerBytes = 4;
+const defaultRelayPath = "127.0.0.1:19832";
 const defaultNavigationTimeoutMs = 10_000;
 
 export type OpenBrowserUseLoadState = "domcontentloaded" | "load";
@@ -48,6 +49,60 @@ export type OpenBrowserUseWaitForLoadStateOptions = {
 
 export type OpenBrowserUseBrowserOptions = OpenBrowserUseClientOptions | { client: OpenBrowserUseClient };
 
+export type OpenBrowserUseTextOptions = {
+  selector?: string;
+  maxChars?: number;
+};
+
+export type OpenBrowserUsePageInfo = {
+  title: string;
+  url: string;
+  readyState: string;
+  text: string;
+};
+
+export type OpenBrowserUseTextResult = {
+  text: string;
+};
+
+export type OpenBrowserUseSnapshotItem = {
+  index: number;
+  tag: string;
+  text: string;
+  type?: string;
+  href?: string;
+  selector?: string;
+};
+
+export type OpenBrowserUseSnapshotResult = {
+  items: OpenBrowserUseSnapshotItem[];
+};
+
+export type OpenBrowserUseScreenshotOptions = {
+  selector?: string;
+  fullPage?: boolean;
+};
+
+export type OpenBrowserUseScreenshotResult = {
+  data: string;
+  bytes: number;
+  format: "png";
+  tabId: number;
+  selector?: string;
+  clip?: JsonValue;
+};
+
+export type OpenBrowserUseInteractionResult = {
+  ok: boolean;
+  ref: string;
+  action?: "click" | "fill";
+  reason?: string;
+  tag?: string;
+  text?: string;
+  rect?: JsonValue;
+  valueLength?: number;
+};
+
 export class OpenBrowserUseClient {
   readonly socketPath: string;
   readonly sessionId: string;
@@ -59,8 +114,8 @@ export class OpenBrowserUseClient {
   #pending = new Map<string, PendingRequest>();
   #notificationHandlers = new Set<NotificationHandler>();
 
-  constructor(options: OpenBrowserUseClientOptions) {
-    this.socketPath = options.socketPath;
+  constructor(options: OpenBrowserUseClientOptions = {}) {
+    this.socketPath = options.socketPath ?? defaultRelayPath;
     this.sessionId = options.sessionId ?? "open-browser-use-js";
     this.turnId = options.turnId ?? `turn-${Date.now()}`;
     this.timeoutMs = options.timeoutMs ?? 10_000;
@@ -70,7 +125,8 @@ export class OpenBrowserUseClient {
     if (this.#socket) {
       return this;
     }
-    const socket = createConnection(this.socketPath);
+    const tcpTarget = tcpSocketTarget(this.socketPath);
+    const socket = tcpTarget ? createConnection(tcpTarget.port, tcpTarget.host) : createConnection(this.socketPath);
     this.#socket = socket;
     socket.on("data", (chunk) => this.#handleData(Buffer.from(chunk)));
     socket.on("close", () => this.#rejectAll(new Error("Open Browser Use socket closed")));
@@ -282,7 +338,7 @@ export class OpenBrowserUseClient {
   }
 }
 
-export async function connectOpenBrowserUse(options: OpenBrowserUseBrowserOptions): Promise<OpenBrowserUseBrowser> {
+export async function connectOpenBrowserUse(options: OpenBrowserUseBrowserOptions = {}): Promise<OpenBrowserUseBrowser> {
   const browser = new OpenBrowserUseBrowser(options);
   await browser.connect();
   return browser;
@@ -292,7 +348,7 @@ export class OpenBrowserUseBrowser {
   readonly client: OpenBrowserUseClient;
   readonly cdp: OpenBrowserUseCdp;
 
-  constructor(options: OpenBrowserUseBrowserOptions) {
+  constructor(options: OpenBrowserUseBrowserOptions = {}) {
     this.client = "client" in options ? options.client : new OpenBrowserUseClient(options);
     this.cdp = new OpenBrowserUseCdp(this.client);
   }
@@ -348,12 +404,90 @@ export class OpenBrowserUseTab {
     return this.browser.cdp.evaluate(this.id, "document.body?.innerText ?? ''").then((value) => String(value ?? ""));
   }
 
+  async pageInfo(options: OpenBrowserUseTextOptions = {}): Promise<OpenBrowserUsePageInfo> {
+    const value = await this.browser.cdp.evaluate(
+      this.id,
+      pageInfoExpression(options.selector ?? "", options.maxChars ?? 0)
+    );
+    if (!isObject(value)) {
+      throw new Error("pageInfo returned no object value");
+    }
+    return {
+      title: String(value.title ?? ""),
+      url: String(value.url ?? ""),
+      readyState: String(value.readyState ?? ""),
+      text: String(value.text ?? "")
+    };
+  }
+
+  async text(options: OpenBrowserUseTextOptions = {}): Promise<OpenBrowserUseTextResult> {
+    const value = await this.browser.cdp.evaluate(
+      this.id,
+      pageTextExpression(options.selector ?? "", options.maxChars ?? 0)
+    );
+    return { text: String(value ?? "") };
+  }
+
+  async snapshot(options: { limit?: number } = {}): Promise<OpenBrowserUseSnapshotResult> {
+    const value = await this.browser.cdp.evaluate(this.id, snapshotExpression(options.limit ?? 100));
+    if (!Array.isArray(value)) {
+      throw new Error("snapshot returned no element list");
+    }
+    return { items: value.map(snapshotItemFromValue) };
+  }
+
+  async screenshot(options: OpenBrowserUseScreenshotOptions = {}): Promise<OpenBrowserUseScreenshotResult> {
+    const commandParams: BrowserUseRequestParams = { format: "png" };
+    let clip: JsonValue | undefined;
+    if (options.selector) {
+      clip = await this.resolveScreenshotClip(selectorClipExpression(options.selector), "selector");
+      commandParams.clip = clip;
+    } else if (options.fullPage) {
+      clip = await this.resolveScreenshotClip(fullPageClipExpression(), "full-page");
+      commandParams.clip = clip;
+    }
+    const result = await this.browser.cdp.call(this.id, "Page.captureScreenshot", commandParams);
+    if (!isObject(result) || typeof result.data !== "string" || !result.data) {
+      throw new Error("screenshot returned no data");
+    }
+    return {
+      data: result.data,
+      bytes: Buffer.from(result.data, "base64").length,
+      format: "png",
+      tabId: this.id,
+      ...(options.selector ? { selector: options.selector } : {}),
+      ...(clip === undefined ? {} : { clip })
+    };
+  }
+
+  async click(ref: string | number): Promise<OpenBrowserUseInteractionResult> {
+    const result = await this.browser.cdp.evaluate(this.id, clickExpression(String(ref).replace(/^@/, "")));
+    return interactionResultFromValue("click", result);
+  }
+
+  async fill(ref: string | number, text: string): Promise<OpenBrowserUseInteractionResult> {
+    const result = await this.browser.cdp.evaluate(this.id, fillExpression(String(ref).replace(/^@/, ""), text));
+    return interactionResultFromValue("fill", result);
+  }
+
   evaluate(expression: string, options: { awaitPromise?: boolean } = {}): Promise<JsonValue> {
     return this.browser.cdp.evaluate(this.id, expression, options);
   }
 
   close(): Promise<JsonValue> {
     return this.browser.cdp.call(this.id, "Page.close");
+  }
+
+  private async resolveScreenshotClip(expression: string, label: string): Promise<JsonValue> {
+    const value = await this.browser.cdp.evaluate(this.id, expression);
+    if (!isObject(value) || value.ok !== true) {
+      const reason = isObject(value) && typeof value.reason === "string" ? value.reason : "unknown";
+      throw new Error(`${label} screenshot clip failed: ${reason}`);
+    }
+    if (!isObject(value.clip)) {
+      throw new Error(`${label} screenshot clip returned no clip`);
+    }
+    return value.clip;
   }
 }
 
@@ -370,6 +504,30 @@ export class OpenBrowserUseTabPlaywright {
 
   domSnapshot(): Promise<string> {
     return this.tab.domSnapshot();
+  }
+
+  pageInfo(options: OpenBrowserUseTextOptions = {}): Promise<OpenBrowserUsePageInfo> {
+    return this.tab.pageInfo(options);
+  }
+
+  text(options: OpenBrowserUseTextOptions = {}): Promise<OpenBrowserUseTextResult> {
+    return this.tab.text(options);
+  }
+
+  snapshot(options: { limit?: number } = {}): Promise<OpenBrowserUseSnapshotResult> {
+    return this.tab.snapshot(options);
+  }
+
+  screenshot(options: OpenBrowserUseScreenshotOptions = {}): Promise<OpenBrowserUseScreenshotResult> {
+    return this.tab.screenshot(options);
+  }
+
+  click(ref: string | number): Promise<OpenBrowserUseInteractionResult> {
+    return this.tab.click(ref);
+  }
+
+  fill(ref: string | number, text: string): Promise<OpenBrowserUseInteractionResult> {
+    return this.tab.fill(ref, text);
   }
 }
 
@@ -586,4 +744,203 @@ function cdpEventForTab(
 
 function stringValue(value: JsonValue | undefined): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function tcpSocketTarget(socketPath: string): { host: string; port: number } | null {
+  const match = /^([^:]+):(\d+)$/.exec(socketPath);
+  if (!match) {
+    return null;
+  }
+  return { host: match[1], port: Number(match[2]) };
+}
+
+function pageTextExpression(selector: string, maxChars: number): string {
+  return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (${maxChars} > 0 && text.length > ${maxChars}) text = text.slice(0, ${maxChars});
+  return text;
+})()`;
+}
+
+function pageInfoExpression(selector: string, maxChars: number): string {
+  return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (${maxChars} > 0 && text.length > ${maxChars}) text = text.slice(0, ${maxChars});
+  return { title: document.title ?? "", url: location.href, readyState: document.readyState, text };
+})()`;
+}
+
+function snapshotExpression(limit: number): string {
+  const normalizedLimit = limit > 0 ? limit : 100;
+  return `(() => {
+  if (typeof window.__obu_refs !== 'undefined' && window.__obu_refs_limit === ${normalizedLimit}) return window.__obu_refs;
+  const els = document.querySelectorAll('button, a, input, select, textarea, [role=button], [role=textbox], [role=combobox]');
+  const results = [];
+  let idx = 0;
+  for (const el of els) {
+    if (el.offsetParent === null && el.tagName !== 'SELECT') continue;
+    const tag = el.tagName.toLowerCase();
+    const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+    const id = el.id || '';
+    const type = (el.type || '').toLowerCase();
+    const href = el.href || '';
+    const selector = id ? '#' + CSS.escape(id) : '';
+    el.setAttribute('data-obu-ref', String(idx + 1));
+    results.push({ index: idx + 1, tag, text, type, href, selector });
+    idx++;
+    if (idx >= ${normalizedLimit}) break;
+  }
+  window.__obu_refs = results;
+  window.__obu_refs_limit = ${normalizedLimit};
+  return results;
+})()`;
+}
+
+function selectorClipExpression(selector: string): string {
+  return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const el = document.querySelector(selector);
+  if (!el) return { ok: false, reason: "not-found", selector };
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { ok: false, reason: "not-visible", selector, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+  }
+  return {
+    ok: true,
+    selector,
+    clip: {
+      x: Math.max(0, rect.left + window.scrollX),
+      y: Math.max(0, rect.top + window.scrollY),
+      width: rect.width,
+      height: rect.height,
+      scale: 1
+    }
+  };
+})()`;
+}
+
+function fullPageClipExpression(): string {
+  return `(() => {
+  const doc = document.documentElement;
+  const body = document.body;
+  const width = Math.max(doc?.scrollWidth ?? 0, body?.scrollWidth ?? 0, doc?.clientWidth ?? 0, window.innerWidth);
+  const height = Math.max(doc?.scrollHeight ?? 0, body?.scrollHeight ?? 0, doc?.clientHeight ?? 0, window.innerHeight);
+  return { ok: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+})()`;
+}
+
+function interactionPreludeExpression(ref: string): string {
+  return `const ref = ${JSON.stringify(ref)};
+  const el = [...document.querySelectorAll("[data-obu-ref]")].find((candidate) => candidate.getAttribute("data-obu-ref") === ref);
+  const describe = (reason, extra = {}) => ({
+    ok: false,
+    ref,
+    reason,
+    tag: el?.tagName?.toLowerCase?.() ?? "",
+    text: (el?.innerText || el?.value || el?.placeholder || el?.getAttribute?.("aria-label") || "").trim().slice(0, 120),
+    ...extra,
+  });
+  if (!el) return { ok: false, ref, reason: "not-found" };
+  if (el.disabled || el.getAttribute("aria-disabled") === "true") return describe("disabled");
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") {
+    return describe("not-visible", { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+  }
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;`;
+}
+
+function clickExpression(ref: string): string {
+  return `(() => {
+  ${interactionPreludeExpression(ref)}
+  const eventInit = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+  for (const type of ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup"]) {
+    const EventClass = type.startsWith("pointer") && window.PointerEvent ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new EventClass(type, eventInit));
+  }
+  if (typeof el.click === "function") el.click();
+  return {
+    ok: true,
+    ref,
+    action: "click",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`;
+}
+
+function fillExpression(ref: string, text: string): string {
+  return `(() => {
+  ${interactionPreludeExpression(ref)}
+  const text = ${JSON.stringify(text)};
+  el.focus();
+  if (el.isContentEditable) {
+    el.textContent = text;
+  } else if ("value" in el) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype :
+      el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor?.set) {
+      descriptor.set.call(el, text);
+    } else {
+      el.value = text;
+    }
+  } else {
+    return describe("not-fillable");
+  }
+  el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return {
+    ok: true,
+    ref,
+    action: "fill",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    valueLength: String(("value" in el ? el.value : el.textContent) ?? "").length,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`;
+}
+
+function snapshotItemFromValue(value: JsonValue): OpenBrowserUseSnapshotItem {
+  if (!isObject(value)) {
+    throw new Error("snapshot returned a non-object element");
+  }
+  return {
+    index: Number(value.index ?? 0),
+    tag: String(value.tag ?? ""),
+    text: String(value.text ?? ""),
+    ...(typeof value.type === "string" ? { type: value.type } : {}),
+    ...(typeof value.href === "string" ? { href: value.href } : {}),
+    ...(typeof value.selector === "string" ? { selector: value.selector } : {})
+  };
+}
+
+function interactionResultFromValue(action: "click" | "fill", value: JsonValue): OpenBrowserUseInteractionResult {
+  if (!isObject(value)) {
+    throw new Error(`${action} returned no object value`);
+  }
+  const result: OpenBrowserUseInteractionResult = {
+    ok: value.ok === true,
+    ref: String(value.ref ?? ""),
+    ...(value.action === action ? { action } : {}),
+    ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    ...(typeof value.tag === "string" ? { tag: value.tag } : {}),
+    ...(typeof value.text === "string" ? { text: value.text } : {}),
+    ...(value.rect === undefined ? {} : { rect: value.rect }),
+    ...(typeof value.valueLength === "number" ? { valueLength: value.valueLength } : {})
+  };
+  if (!result.ok) {
+    throw new Error(`${action} failed: ${result.reason ?? "unknown"}`);
+  }
+  return result;
 }

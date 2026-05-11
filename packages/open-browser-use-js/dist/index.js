@@ -1,6 +1,7 @@
 import { createConnection } from "node:net";
 import { endianness } from "node:os";
 const headerBytes = 4;
+const defaultRelayPath = "127.0.0.1:19832";
 const defaultNavigationTimeoutMs = 10_000;
 export class OpenBrowserUseClient {
     socketPath;
@@ -12,8 +13,8 @@ export class OpenBrowserUseClient {
     #nextId = 1;
     #pending = new Map();
     #notificationHandlers = new Set();
-    constructor(options) {
-        this.socketPath = options.socketPath;
+    constructor(options = {}) {
+        this.socketPath = options.socketPath ?? defaultRelayPath;
         this.sessionId = options.sessionId ?? "open-browser-use-js";
         this.turnId = options.turnId ?? `turn-${Date.now()}`;
         this.timeoutMs = options.timeoutMs ?? 10_000;
@@ -22,7 +23,8 @@ export class OpenBrowserUseClient {
         if (this.#socket) {
             return this;
         }
-        const socket = createConnection(this.socketPath);
+        const tcpTarget = tcpSocketTarget(this.socketPath);
+        const socket = tcpTarget ? createConnection(tcpTarget.port, tcpTarget.host) : createConnection(this.socketPath);
         this.#socket = socket;
         socket.on("data", (chunk) => this.#handleData(Buffer.from(chunk)));
         socket.on("close", () => this.#rejectAll(new Error("Open Browser Use socket closed")));
@@ -204,7 +206,7 @@ export class OpenBrowserUseClient {
         }
     }
 }
-export async function connectOpenBrowserUse(options) {
+export async function connectOpenBrowserUse(options = {}) {
     const browser = new OpenBrowserUseBrowser(options);
     await browser.connect();
     return browser;
@@ -212,7 +214,7 @@ export async function connectOpenBrowserUse(options) {
 export class OpenBrowserUseBrowser {
     client;
     cdp;
-    constructor(options) {
+    constructor(options = {}) {
         this.client = "client" in options ? options.client : new OpenBrowserUseClient(options);
         this.cdp = new OpenBrowserUseCdp(this.client);
     }
@@ -257,11 +259,77 @@ export class OpenBrowserUseTab {
     domSnapshot() {
         return this.browser.cdp.evaluate(this.id, "document.body?.innerText ?? ''").then((value) => String(value ?? ""));
     }
+    async pageInfo(options = {}) {
+        const value = await this.browser.cdp.evaluate(this.id, pageInfoExpression(options.selector ?? "", options.maxChars ?? 0));
+        if (!isObject(value)) {
+            throw new Error("pageInfo returned no object value");
+        }
+        return {
+            title: String(value.title ?? ""),
+            url: String(value.url ?? ""),
+            readyState: String(value.readyState ?? ""),
+            text: String(value.text ?? "")
+        };
+    }
+    async text(options = {}) {
+        const value = await this.browser.cdp.evaluate(this.id, pageTextExpression(options.selector ?? "", options.maxChars ?? 0));
+        return { text: String(value ?? "") };
+    }
+    async snapshot(options = {}) {
+        const value = await this.browser.cdp.evaluate(this.id, snapshotExpression(options.limit ?? 100));
+        if (!Array.isArray(value)) {
+            throw new Error("snapshot returned no element list");
+        }
+        return { items: value.map(snapshotItemFromValue) };
+    }
+    async screenshot(options = {}) {
+        const commandParams = { format: "png" };
+        let clip;
+        if (options.selector) {
+            clip = await this.resolveScreenshotClip(selectorClipExpression(options.selector), "selector");
+            commandParams.clip = clip;
+        }
+        else if (options.fullPage) {
+            clip = await this.resolveScreenshotClip(fullPageClipExpression(), "full-page");
+            commandParams.clip = clip;
+        }
+        const result = await this.browser.cdp.call(this.id, "Page.captureScreenshot", commandParams);
+        if (!isObject(result) || typeof result.data !== "string" || !result.data) {
+            throw new Error("screenshot returned no data");
+        }
+        return {
+            data: result.data,
+            bytes: Buffer.from(result.data, "base64").length,
+            format: "png",
+            tabId: this.id,
+            ...(options.selector ? { selector: options.selector } : {}),
+            ...(clip === undefined ? {} : { clip })
+        };
+    }
+    async click(ref) {
+        const result = await this.browser.cdp.evaluate(this.id, clickExpression(String(ref).replace(/^@/, "")));
+        return interactionResultFromValue("click", result);
+    }
+    async fill(ref, text) {
+        const result = await this.browser.cdp.evaluate(this.id, fillExpression(String(ref).replace(/^@/, ""), text));
+        return interactionResultFromValue("fill", result);
+    }
     evaluate(expression, options = {}) {
         return this.browser.cdp.evaluate(this.id, expression, options);
     }
     close() {
         return this.browser.cdp.call(this.id, "Page.close");
+    }
+    async resolveScreenshotClip(expression, label) {
+        const value = await this.browser.cdp.evaluate(this.id, expression);
+        if (!isObject(value) || value.ok !== true) {
+            const reason = isObject(value) && typeof value.reason === "string" ? value.reason : "unknown";
+            throw new Error(`${label} screenshot clip failed: ${reason}`);
+        }
+        if (!isObject(value.clip)) {
+            throw new Error(`${label} screenshot clip returned no clip`);
+        }
+        return value.clip;
     }
 }
 export class OpenBrowserUseTabPlaywright {
@@ -274,6 +342,24 @@ export class OpenBrowserUseTabPlaywright {
     }
     domSnapshot() {
         return this.tab.domSnapshot();
+    }
+    pageInfo(options = {}) {
+        return this.tab.pageInfo(options);
+    }
+    text(options = {}) {
+        return this.tab.text(options);
+    }
+    snapshot(options = {}) {
+        return this.tab.snapshot(options);
+    }
+    screenshot(options = {}) {
+        return this.tab.screenshot(options);
+    }
+    click(ref) {
+        return this.tab.click(ref);
+    }
+    fill(ref, text) {
+        return this.tab.fill(ref, text);
     }
 }
 export class OpenBrowserUseCdp {
@@ -460,4 +546,192 @@ function cdpEventForTab(notification, tabId) {
 }
 function stringValue(value) {
     return typeof value === "string" ? value : undefined;
+}
+function tcpSocketTarget(socketPath) {
+    const match = /^([^:]+):(\d+)$/.exec(socketPath);
+    if (!match) {
+        return null;
+    }
+    return { host: match[1], port: Number(match[2]) };
+}
+function pageTextExpression(selector, maxChars) {
+    return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (${maxChars} > 0 && text.length > ${maxChars}) text = text.slice(0, ${maxChars});
+  return text;
+})()`;
+}
+function pageInfoExpression(selector, maxChars) {
+    return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if (${maxChars} > 0 && text.length > ${maxChars}) text = text.slice(0, ${maxChars});
+  return { title: document.title ?? "", url: location.href, readyState: document.readyState, text };
+})()`;
+}
+function snapshotExpression(limit) {
+    const normalizedLimit = limit > 0 ? limit : 100;
+    return `(() => {
+  if (typeof window.__obu_refs !== 'undefined' && window.__obu_refs_limit === ${normalizedLimit}) return window.__obu_refs;
+  const els = document.querySelectorAll('button, a, input, select, textarea, [role=button], [role=textbox], [role=combobox]');
+  const results = [];
+  let idx = 0;
+  for (const el of els) {
+    if (el.offsetParent === null && el.tagName !== 'SELECT') continue;
+    const tag = el.tagName.toLowerCase();
+    const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+    const id = el.id || '';
+    const type = (el.type || '').toLowerCase();
+    const href = el.href || '';
+    const selector = id ? '#' + CSS.escape(id) : '';
+    el.setAttribute('data-obu-ref', String(idx + 1));
+    results.push({ index: idx + 1, tag, text, type, href, selector });
+    idx++;
+    if (idx >= ${normalizedLimit}) break;
+  }
+  window.__obu_refs = results;
+  window.__obu_refs_limit = ${normalizedLimit};
+  return results;
+})()`;
+}
+function selectorClipExpression(selector) {
+    return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const el = document.querySelector(selector);
+  if (!el) return { ok: false, reason: "not-found", selector };
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return { ok: false, reason: "not-visible", selector, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+  }
+  return {
+    ok: true,
+    selector,
+    clip: {
+      x: Math.max(0, rect.left + window.scrollX),
+      y: Math.max(0, rect.top + window.scrollY),
+      width: rect.width,
+      height: rect.height,
+      scale: 1
+    }
+  };
+})()`;
+}
+function fullPageClipExpression() {
+    return `(() => {
+  const doc = document.documentElement;
+  const body = document.body;
+  const width = Math.max(doc?.scrollWidth ?? 0, body?.scrollWidth ?? 0, doc?.clientWidth ?? 0, window.innerWidth);
+  const height = Math.max(doc?.scrollHeight ?? 0, body?.scrollHeight ?? 0, doc?.clientHeight ?? 0, window.innerHeight);
+  return { ok: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+})()`;
+}
+function interactionPreludeExpression(ref) {
+    return `const ref = ${JSON.stringify(ref)};
+  const el = [...document.querySelectorAll("[data-obu-ref]")].find((candidate) => candidate.getAttribute("data-obu-ref") === ref);
+  const describe = (reason, extra = {}) => ({
+    ok: false,
+    ref,
+    reason,
+    tag: el?.tagName?.toLowerCase?.() ?? "",
+    text: (el?.innerText || el?.value || el?.placeholder || el?.getAttribute?.("aria-label") || "").trim().slice(0, 120),
+    ...extra,
+  });
+  if (!el) return { ok: false, ref, reason: "not-found" };
+  if (el.disabled || el.getAttribute("aria-disabled") === "true") return describe("disabled");
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") {
+    return describe("not-visible", { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+  }
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;`;
+}
+function clickExpression(ref) {
+    return `(() => {
+  ${interactionPreludeExpression(ref)}
+  const eventInit = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+  for (const type of ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup"]) {
+    const EventClass = type.startsWith("pointer") && window.PointerEvent ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new EventClass(type, eventInit));
+  }
+  if (typeof el.click === "function") el.click();
+  return {
+    ok: true,
+    ref,
+    action: "click",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`;
+}
+function fillExpression(ref, text) {
+    return `(() => {
+  ${interactionPreludeExpression(ref)}
+  const text = ${JSON.stringify(text)};
+  el.focus();
+  if (el.isContentEditable) {
+    el.textContent = text;
+  } else if ("value" in el) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype :
+      el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor?.set) {
+      descriptor.set.call(el, text);
+    } else {
+      el.value = text;
+    }
+  } else {
+    return describe("not-fillable");
+  }
+  el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return {
+    ok: true,
+    ref,
+    action: "fill",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    valueLength: String(("value" in el ? el.value : el.textContent) ?? "").length,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  };
+})()`;
+}
+function snapshotItemFromValue(value) {
+    if (!isObject(value)) {
+        throw new Error("snapshot returned a non-object element");
+    }
+    return {
+        index: Number(value.index ?? 0),
+        tag: String(value.tag ?? ""),
+        text: String(value.text ?? ""),
+        ...(typeof value.type === "string" ? { type: value.type } : {}),
+        ...(typeof value.href === "string" ? { href: value.href } : {}),
+        ...(typeof value.selector === "string" ? { selector: value.selector } : {})
+    };
+}
+function interactionResultFromValue(action, value) {
+    if (!isObject(value)) {
+        throw new Error(`${action} returned no object value`);
+    }
+    const result = {
+        ok: value.ok === true,
+        ref: String(value.ref ?? ""),
+        ...(value.action === action ? { action } : {}),
+        ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+        ...(typeof value.tag === "string" ? { tag: value.tag } : {}),
+        ...(typeof value.text === "string" ? { text: value.text } : {}),
+        ...(value.rect === undefined ? {} : { rect: value.rect }),
+        ...(typeof value.valueLength === "number" ? { valueLength: value.valueLength } : {})
+    };
+    if (!result.ok) {
+        throw new Error(`${action} failed: ${result.reason ?? "unknown"}`);
+    }
+    return result;
 }

@@ -1,6 +1,7 @@
 # Contributing
 
-Open Browser Use is an agent-first repository, but the collaboration rules apply to both people and agents.
+Open Browser Use for Windows is an agent-first repository, but the
+collaboration rules apply to both people and agents.
 
 ## Start With The Local Docs
 
@@ -10,20 +11,22 @@ For most changes, read at least:
 
 - `docs/REPO_COLLAB_GUIDE.md`
 - `docs/ARCHITECTURE.md`
-- `docs/design-docs/core-beliefs.md`
+- `docs/SECURITY.md`
 
 Before finishing code or workflow changes, also check:
 
-- `docs/HISTORY_GUIDE.md`
-- `docs/QUALITY_SCORE.md`
+- `docs/CICD.md`
+- `docs/RELIABILITY.md`
+- `archive/README.md`
 
 ## Keep Changes Coherent
 
 - Prefer small, clearly scoped changes.
 - Update code, tests, docs, release notes, and history together when behavior changes.
 - Do not hide required setup steps in one-off comments or local scripts.
-- If a task is broad, risky, or likely to span multiple rounds, create an execution plan under `docs/exec-plans/active/`.
+- If a task is broad, risky, or likely to span multiple rounds, create an execution plan under `archive/process/docs/exec-plans/active/`.
 - Keep `AGENTS.md` short and use `docs/` for detailed repository knowledge.
+- Treat `archive/` as provenance only; do not add runtime dependencies on archived material.
 
 ## Before Opening A Pull Request
 
@@ -36,7 +39,7 @@ make ci
 Also verify:
 
 - Relevant docs match the final behavior.
-- A history entry was added or updated when the change touched code or repository workflow.
+- A history entry was added or updated under `archive/process/docs/histories/` when the change touched code or repository workflow.
 - User-visible changes have release notes where appropriate.
 - Examples, scripts, and setup instructions still match the implementation.
 - No secrets, private local paths, cookies, browser data, or credentials were committed.

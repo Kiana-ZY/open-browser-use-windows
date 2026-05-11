@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
@@ -33,11 +34,25 @@ class OpenBrowserUseClient:
 
     def connect(self) -> "OpenBrowserUseClient":
         if self._socket is None:
+            if self._connect_tcp_socket_path():
+                return self
             if sys.platform == "win32":
                 self._connect_windows()
             else:
                 self._connect_unix()
         return self
+
+    def _connect_tcp_socket_path(self) -> bool:
+        if ":" not in self.socket_path:
+            return False
+        host, port_text = self.socket_path.rsplit(":", 1)
+        if not host or not port_text.isdigit():
+            return False
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect((host, int(port_text)))
+        self._socket = sock
+        return True
 
     def _connect_unix(self) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -287,6 +302,59 @@ class OpenBrowserUseTab:
         value = self.browser.cdp.evaluate(self.id, "document.body?.innerText ?? ''")
         return "" if value is None else str(value)
 
+    def page_info(self, selector: str = "", max_chars: int = 0) -> JsonObject:
+        value = self.browser.cdp.evaluate(self.id, _page_info_expression(selector, max_chars))
+        if not isinstance(value, dict):
+            raise RuntimeError("page_info returned no object value")
+        return {
+            "title": str(value.get("title") or ""),
+            "url": str(value.get("url") or ""),
+            "readyState": str(value.get("readyState") or ""),
+            "text": str(value.get("text") or ""),
+        }
+
+    def text_result(self, selector: str = "", max_chars: int = 0) -> JsonObject:
+        return {"text": self.text(selector=selector, max_chars=max_chars)}
+
+    def snapshot(self, limit: int = 100) -> JsonObject:
+        value = self.browser.cdp.evaluate(self.id, _snapshot_expression(limit))
+        if not isinstance(value, list):
+            raise RuntimeError("snapshot returned no element list")
+        return {"items": [_snapshot_item_from_value(item) for item in value]}
+
+    def screenshot_result(self, selector: str = "", full_page: bool = False) -> JsonObject:
+        command_params: JsonObject = {"format": "png"}
+        clip: Any = None
+        if selector:
+            clip = self._resolve_screenshot_clip(_selector_clip_expression(selector), "selector")
+            command_params["clip"] = clip
+        elif full_page:
+            clip = self._resolve_screenshot_clip(_full_page_clip_expression(), "full-page")
+            command_params["clip"] = clip
+        result = self.browser.cdp.call(self.id, "Page.captureScreenshot", command_params)
+        if not isinstance(result, dict) or not isinstance(result.get("data"), str) or not result["data"]:
+            raise RuntimeError("screenshot returned no data")
+        data = result["data"]
+        output: JsonObject = {
+            "data": data,
+            "bytes": len(base64.b64decode(data)),
+            "format": "png",
+            "tabId": self.id,
+        }
+        if selector:
+            output["selector"] = selector
+        if clip is not None:
+            output["clip"] = clip
+        return output
+
+    def click(self, ref: str | int) -> JsonObject:
+        result = self.browser.cdp.evaluate(self.id, _click_expression(str(ref).removeprefix("@")))
+        return _interaction_result_from_value("click", result)
+
+    def fill(self, ref: str | int, text: str) -> JsonObject:
+        result = self.browser.cdp.evaluate(self.id, _fill_expression(str(ref).removeprefix("@"), text))
+        return _interaction_result_from_value("fill", result)
+
     def evaluate(self, expression: str, await_promise: bool | None = None) -> Any:
         return self.browser.cdp.evaluate(self.id, expression, await_promise=await_promise)
 
@@ -305,7 +373,6 @@ class OpenBrowserUseTab:
 
     def screenshot(self, path: str | None = None) -> Any:
         """Take a page screenshot. If path is provided, saves to file."""
-        import base64
         result = self.browser.cdp.call(self.id, "Page.captureScreenshot")
         if isinstance(result, dict) and "data" in result:
             if path:
@@ -314,11 +381,10 @@ class OpenBrowserUseTab:
             return result["data"]
         return result
 
-    def text(self, selector: str = "body") -> str:
+    def text(self, selector: str = "body", max_chars: int = 0) -> str:
         """Get innerText of an element. Defaults to full page body text."""
-        value = self.browser.cdp.evaluate(
-            self.id, f"document.querySelector({json.dumps(selector)})?.innerText ?? ''"
-        )
+        normalized_selector = "" if selector == "body" else selector
+        value = self.browser.cdp.evaluate(self.id, _page_text_expression(normalized_selector, max_chars))
         return "" if value is None else str(value)
 
     def locator(self, selector: str) -> "OpenBrowserUseLocator":
@@ -326,6 +392,15 @@ class OpenBrowserUseTab:
 
     def close(self) -> Any:
         return self.browser.cdp.call(self.id, "Page.close")
+
+    def _resolve_screenshot_clip(self, expression: str, label: str) -> Any:
+        value = self.browser.cdp.evaluate(self.id, expression)
+        if not isinstance(value, dict) or value.get("ok") is not True:
+            reason = value.get("reason") if isinstance(value, dict) else "unknown"
+            raise RuntimeError(f"{label} screenshot clip failed: {reason or 'unknown'}")
+        if not isinstance(value.get("clip"), dict):
+            raise RuntimeError(f"{label} screenshot clip returned no clip")
+        return value["clip"]
 
 
 class OpenBrowserUseTabPlaywright:
@@ -341,6 +416,24 @@ class OpenBrowserUseTabPlaywright:
 
     def dom_snapshot(self) -> str:
         return self.tab.dom_snapshot()
+
+    def page_info(self, selector: str = "", max_chars: int = 0) -> JsonObject:
+        return self.tab.page_info(selector=selector, max_chars=max_chars)
+
+    def text_result(self, selector: str = "", max_chars: int = 0) -> JsonObject:
+        return self.tab.text_result(selector=selector, max_chars=max_chars)
+
+    def snapshot(self, limit: int = 100) -> JsonObject:
+        return self.tab.snapshot(limit=limit)
+
+    def screenshot_result(self, selector: str = "", full_page: bool = False) -> JsonObject:
+        return self.tab.screenshot_result(selector=selector, full_page=full_page)
+
+    def click(self, ref: str | int) -> JsonObject:
+        return self.tab.click(ref)
+
+    def fill(self, ref: str | int, text: str) -> JsonObject:
+        return self.tab.fill(ref, text)
 
     def title(self) -> str:
         return self.tab.title()
@@ -505,6 +598,190 @@ def _document_state_matches(document_state: JsonObject | None, state: LoadState)
     return ready_state == "complete" or (state == "domcontentloaded" and ready_state == "interactive")
 
 
+def _page_text_expression(selector: str, max_chars: int) -> str:
+    selector_json = json.dumps(selector)
+    return f"""(() => {{
+  const selector = {selector_json};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if ({max_chars} > 0 && text.length > {max_chars}) text = text.slice(0, {max_chars});
+  return text;
+}})()"""
+
+
+def _page_info_expression(selector: str, max_chars: int) -> str:
+    selector_json = json.dumps(selector)
+    return f"""(() => {{
+  const selector = {selector_json};
+  const root = selector ? document.querySelector(selector) : document.body;
+  let text = root?.innerText ?? "";
+  if ({max_chars} > 0 && text.length > {max_chars}) text = text.slice(0, {max_chars});
+  return {{ title: document.title ?? "", url: location.href, readyState: document.readyState, text }};
+}})()"""
+
+
+def _snapshot_expression(limit: int) -> str:
+    normalized_limit = limit if limit > 0 else 100
+    return f"""(() => {{
+  if (typeof window.__obu_refs !== 'undefined' && window.__obu_refs_limit === {normalized_limit}) return window.__obu_refs;
+  const els = document.querySelectorAll('button, a, input, select, textarea, [role=button], [role=textbox], [role=combobox]');
+  const results = [];
+  let idx = 0;
+  for (const el of els) {{
+    if (el.offsetParent === null && el.tagName !== 'SELECT') continue;
+    const tag = el.tagName.toLowerCase();
+    const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 60);
+    const id = el.id || '';
+    const type = (el.type || '').toLowerCase();
+    const href = el.href || '';
+    const selector = id ? '#' + CSS.escape(id) : '';
+    el.setAttribute('data-obu-ref', String(idx + 1));
+    results.push({{ index: idx + 1, tag, text, type, href, selector }});
+    idx++;
+    if (idx >= {normalized_limit}) break;
+  }}
+  window.__obu_refs = results;
+  window.__obu_refs_limit = {normalized_limit};
+  return results;
+}})()"""
+
+
+def _selector_clip_expression(selector: str) -> str:
+    selector_json = json.dumps(selector)
+    return f"""(() => {{
+  const selector = {selector_json};
+  const el = document.querySelector(selector);
+  if (!el) return {{ ok: false, reason: "not-found", selector }};
+  el.scrollIntoView({{ block: "center", inline: "center", behavior: "instant" }});
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {{
+    return {{ ok: false, reason: "not-visible", selector, rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }} }};
+  }}
+  return {{
+    ok: true,
+    selector,
+    clip: {{
+      x: Math.max(0, rect.left + window.scrollX),
+      y: Math.max(0, rect.top + window.scrollY),
+      width: rect.width,
+      height: rect.height,
+      scale: 1
+    }}
+  }};
+}})()"""
+
+
+def _full_page_clip_expression() -> str:
+    return """(() => {
+  const doc = document.documentElement;
+  const body = document.body;
+  const width = Math.max(doc?.scrollWidth ?? 0, body?.scrollWidth ?? 0, doc?.clientWidth ?? 0, window.innerWidth);
+  const height = Math.max(doc?.scrollHeight ?? 0, body?.scrollHeight ?? 0, doc?.clientHeight ?? 0, window.innerHeight);
+  return { ok: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+})()"""
+
+
+def _interaction_prelude_expression(ref: str) -> str:
+    ref_json = json.dumps(ref)
+    return f"""const ref = {ref_json};
+  const el = [...document.querySelectorAll("[data-obu-ref]")].find((candidate) => candidate.getAttribute("data-obu-ref") === ref);
+  const describe = (reason, extra = {{}}) => ({{
+    ok: false,
+    ref,
+    reason,
+    tag: el?.tagName?.toLowerCase?.() ?? "",
+    text: (el?.innerText || el?.value || el?.placeholder || el?.getAttribute?.("aria-label") || "").trim().slice(0, 120),
+    ...extra,
+  }});
+  if (!el) return {{ ok: false, ref, reason: "not-found" }};
+  if (el.disabled || el.getAttribute("aria-disabled") === "true") return describe("disabled");
+  el.scrollIntoView({{ block: "center", inline: "center", behavior: "instant" }});
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") {{
+    return describe("not-visible", {{ rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }} }});
+  }}
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;"""
+
+
+def _click_expression(ref: str) -> str:
+    return f"""(() => {{
+  {_interaction_prelude_expression(ref)}
+  const eventInit = {{ bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }};
+  for (const type of ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup"]) {{
+    const EventClass = type.startsWith("pointer") && window.PointerEvent ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new EventClass(type, eventInit));
+  }}
+  if (typeof el.click === "function") el.click();
+  return {{
+    ok: true,
+    ref,
+    action: "click",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }}
+  }};
+}})()"""
+
+
+def _fill_expression(ref: str, text: str) -> str:
+    text_json = json.dumps(text)
+    return f"""(() => {{
+  {_interaction_prelude_expression(ref)}
+  const text = {text_json};
+  el.focus();
+  if (el.isContentEditable) {{
+    el.textContent = text;
+  }} else if ("value" in el) {{
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype :
+      el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor?.set) {{
+      descriptor.set.call(el, text);
+    }} else {{
+      el.value = text;
+    }}
+  }} else {{
+    return describe("not-fillable");
+  }}
+  el.dispatchEvent(new InputEvent("beforeinput", {{ bubbles: true, cancelable: true, inputType: "insertText", data: text }}));
+  el.dispatchEvent(new InputEvent("input", {{ bubbles: true, inputType: "insertText", data: text }}));
+  el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  return {{
+    ok: true,
+    ref,
+    action: "fill",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().slice(0, 120),
+    valueLength: String(("value" in el ? el.value : el.textContent) ?? "").length,
+    rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }}
+  }};
+}})()"""
+
+
+def _snapshot_item_from_value(value: Any) -> JsonObject:
+    if not isinstance(value, dict):
+        raise RuntimeError("snapshot returned a non-object element")
+    return {
+        "index": int(value.get("index") or 0),
+        "tag": str(value.get("tag") or ""),
+        "text": str(value.get("text") or ""),
+        "type": str(value.get("type") or ""),
+        "href": str(value.get("href") or ""),
+        "selector": str(value.get("selector") or ""),
+    }
+
+
+def _interaction_result_from_value(action: str, value: Any) -> JsonObject:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{action} returned no object value")
+    result = dict(value)
+    if result.get("ok") is not True:
+        raise RuntimeError(f"{action} failed: {result.get('reason') or 'unknown'}")
+    return result
+
+
 def _locator_inner_text_expression(selector: str, timeout_ms: int | None) -> str:
     timeout = DEFAULT_NAVIGATION_TIMEOUT * 1000 if timeout_ms is None else timeout_ms
     if timeout < 0:
@@ -524,4 +801,3 @@ def _locator_inner_text_expression(selector: str, timeout_ms: int | None) -> str
     await new Promise((resolve) => setTimeout(resolve, 100));
   }}
 }})()"""
-

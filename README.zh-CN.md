@@ -1,120 +1,148 @@
-# Open Browser Use
+# Open Browser Use for Windows
 
-[![English](https://img.shields.io/badge/English-Click-yellow)](./README.md)
-[![简体中文](https://img.shields.io/badge/简体中文-点击查看-orange)](./README.zh-CN.md)
-[![Release](https://img.shields.io/github/v/release/iFurySt/open-codex-browser-use)](https://github.com/iFurySt/open-codex-browser-use/releases)
-[![npm SDK](https://img.shields.io/npm/v/open-browser-use-sdk?label=npm%20SDK)](https://www.npmjs.com/package/open-browser-use-sdk)
-[![PyPI SDK](https://img.shields.io/pypi/v/open-browser-use-sdk?label=PyPI%20SDK)](https://pypi.org/project/open-browser-use-sdk/)
-[![Go SDK](https://pkg.go.dev/badge/github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go.svg)](https://pkg.go.dev/github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/iFurySt/open-codex-browser-use)
+Open Browser Use for Windows 是面向 Windows 的 Open Browser Use 版本。它通过
+Chrome / Microsoft Edge 扩展、Go native host、CLI、SDK 和 MCP server，让 AI
+Agent 操作用户真实浏览器 profile。
 
----
+命令名保持不变：正式命令是 `open-browser-use`，简称仍然是 `obu`。
 
-> [!TIP]
-> 对 Computer Use 感兴趣的话，可以看看 [open-computer-use](https://github.com/iFurySt/open-codex-computer-use)。
+## 项目重点
 
-`open-browser-use` 是平台中立的浏览器操作方案，也是Codex.app最新发布的Chrome Browser Use的开源替代方案。背后的故事可以看这篇[Browser Use详解](https://www.ifuryst.com/blog/2026/open-browser-use/)文章。 技术方案采用的是浏览器插件和open-browser-use cli结合，可通过 JS/Python/Go SDK 或 CLI 的方式接入。
+| 模块 | Windows 支持 |
+| --- | --- |
+| 浏览器 | Chrome 和 Microsoft Edge |
+| Native host | 由 Native Messaging 启动的 `open-browser-use.exe` |
+| 客户端传输 | Windows 上使用 `127.0.0.1:19832` TCP relay |
+| Agent 接入 | CLI、MCP、JS SDK、Python SDK、Go SDK 和 skill |
+| 安装辅助 | `setup`、`setup beta`、`install-manifest` 支持 `--browser edge` |
 
-https://github.com/user-attachments/assets/bcfba878-f6a8-44b9-b84b-29c7e0285687
+## 架构
 
-## Quick Start
-第一次安装可以无脑运行：
-```bash
-brew tap iFurySt/open-browser-use
-brew install open-browser-use
-open-browser-use setup beta
+```text
+Chrome / Edge MV3 extension
+  -> Native Messaging stdio
+  -> open-browser-use.exe
+  -> Windows TCP 127.0.0.1:19832
+  -> CLI / MCP / JS SDK / Python SDK / Go SDK
 ```
 
-### 安装 CLI
-```bash
-# npm安装
-npm i -g open-browser-use
+## 编译
 
-# Homebrew安装
-brew tap iFurySt/open-browser-use && brew install open-browser-use
-
-# 升级
-brew upgrade open-browser-use
+```powershell
+go build -o open-browser-use.exe ./cmd/open-browser-use
 ```
 
-### 配置 Chrome
-注册绑定到该插件的 native host，然后安装对应的浏览器插件
+## 安装浏览器集成
 
-```bash
-# 目前插件在上架商店中，暂时不要用这个命令
-# open-browser-use setup
+Edge:
 
-# 通过zip/crx包直接导入安装插件，打开的文件里直接拖包到chrome://extensions/页面
-open-browser-use setup beta
+```powershell
+.\open-browser-use.exe setup beta --browser edge
 ```
 
-*也可以手动到[GitHub Releases](https://github.com/iFurySt/open-codex-browser-use/releases)里下载最新的包安装*
+Chrome:
 
-### 使用
+```powershell
+.\open-browser-use.exe setup beta --browser chrome
+```
 
-#### SDK
+命令会打开扩展管理页并显示扩展 ZIP。打开开发者模式后，把 ZIP 拖进扩展页面安装。
+
+## 验证
+
+```powershell
+.\open-browser-use.exe version
+.\open-browser-use.exe ping --json
+.\open-browser-use.exe info --json
+```
+
+如果已经全局安装，可以用：
+
+```powershell
+obu version
+obu ping --json
+obu info --json
+```
+
+## 常用命令
+
+每个任务使用一个唯一 session id。
+
+```powershell
+$env:OBU_SESSION_ID = "obu-task-$(Get-Date -Format yyyyMMddHHmmss)"
+obu name-session --name "Task - OBU"
+obu open-tab --url https://github.com/trending --json
+obu page-info --max-chars 2000 --json
+obu snapshot --limit 50 --json
+obu finalize-tabs --keep "[]" --json
+```
+
+| 命令 | 说明 |
+| --- | --- |
+| `obu ping --json` | 连通性检查 |
+| `obu info --json` | 扩展和 native host 元数据 |
+| `obu user-tabs --json` | 列出全部浏览器标签页 |
+| `obu open-tab --url URL --json` | 打开任务标签页 |
+| `obu claim-tab --tab-id ID --json` | 接管已有用户标签页 |
+| `obu page-info --max-chars N --json` | 获取标题、URL、readyState 和正文 |
+| `obu snapshot --limit N --json` | 获取有限数量的可交互元素 |
+| `obu click @1 --json` | 点击 snapshot ref |
+| `obu fill @2 "text" --json` | 填写 snapshot ref |
+| `obu screenshot --output file.png --json` | 截图 |
+| `obu run -c "..."` | 执行轻量 action plan |
+| `obu mcp` | 启动 stdio MCP server |
+
+## SDK
+
+JavaScript / TypeScript:
 
 ```bash
-# JavaScript / TypeScript
 npm install open-browser-use-sdk
+```
 
-# Python
+Python:
+
+```bash
 pip install open-browser-use-sdk
-
-# Go
-go get github.com/ifuryst/open-codex-browser-use/packages/open-browser-use-go
 ```
 
-SDK 在 npm 和 PyPI 上统一叫 `open-browser-use-sdk`。Python 代码里的 import
-模块名保持 `open_browser_use`；Go 代码通常把 SDK import 为 `obu`。
-
-#### Skill
-
-一键安装 skill：
+Go:
 
 ```bash
-# 安装到codex
-npx skills add iFurySt/open-codex-browser-use -g -a codex --skill open-browser-use --copy -y
-npx skills ls -g -a codex | rg 'open-browser-use'
-codex exec --skip-git-repo-check "用open-browser-use查看下今天Hacker News有什么值得关注的"
-
-# 安装到claude code
-npx skills add iFurySt/open-codex-browser-use -g -a claude-code --skill open-browser-use --copy -y
+go get github.com/Kiana-ZY/open-browser-use-windows/packages/open-browser-use-go
 ```
 
-更新已有的全局安装，包括上面安装到 Codex 的那份：
+## Agent Skill
 
-```bash
-npx skills update open-browser-use -g -y
+可复用 skill 位于 `skills/open-browser-use/`，适合 Codex、Claude Code 和其它
+shell-first Agent runtime。触发别名是 `@obu`，CLI 简称仍是 `obu`。
 
-# `upgrade` 是 `update` 的别名
-npx skills upgrade open-browser-use -g -y
-```
+Codex / Claude Code 的 MCP 配置示例见 `docs/CODEX_AND_CLAUDE_USAGE.md`。
 
-也可以手动下载`open-browser-use`的[skill](./skills/open-browser-use)并安装，就可以愉快的开始使用了🚀
+## 仓库结构
 
-*[GitHub Releases](https://github.com/iFurySt/open-codex-browser-use/releases)里有可下载的.skill/.zip包*
+| 路径 | 作用 |
+| --- | --- |
+| `apps/chrome-extension/` | Chrome / Edge MV3 扩展 |
+| `cmd/open-browser-use/` | Go CLI、native host 和 MCP server |
+| `internal/host/` | Native host relay 和 Windows TCP 传输 |
+| `internal/wire/` | Native Messaging frame codec |
+| `packages/open-browser-use-cli/` | 暴露 `open-browser-use` 和 `obu` 的 npm CLI 包 |
+| `packages/open-browser-use-js/` | JS/TS SDK |
+| `packages/open-browser-use-python/` | Python SDK |
+| `packages/open-browser-use-go/` | Go SDK |
+| `skills/open-browser-use/` | Agent 使用指南 |
+| `archive/` | 非核心研究资料、过程记录和本地快照 |
 
-#### MCP
+## Archive
 
-一键安装 MCP server 到所有支持的全局 Agent 配置：
+`archive/` 保存不属于主运行路径、但仍有追溯价值的材料：
 
-```bash
-npx add-mcp "obu mcp" --name open_browser_use --all -g -y
-npx add-mcp list -g
-```
+- `archive/process/`：执行计划、历史记录、旧模板文档和旧 HTML 指南。
+- `archive/research/`：逆向资料、生成数据和研究用包。
+- `archive/local-agent-snapshots/`：本地 agent skill 快照。
 
-也可以手动配置到支持本地 stdio MCP 的 Agent runtime：
+## 许可证
 
-```toml
-[mcp_servers.open_browser_use]
-command = "obu"
-args = ["mcp"]
-```
-
-这个 MCP server 会暴露标签页列表、打开/接管标签页、导航、CDP、action plan
-和清理等浏览器工具。
-
-## License
-
-[MIT](./LICENSE)
+MIT。本项目基于 Open Browser Use 工作演进，整理为 Windows-first 的
+Chrome / Edge 版本。

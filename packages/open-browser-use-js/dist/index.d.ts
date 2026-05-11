@@ -5,7 +5,7 @@ export type BrowserUseRequestParams = {
     [key: string]: JsonValue;
 };
 export type OpenBrowserUseClientOptions = {
-    socketPath: string;
+    socketPath?: string;
     sessionId?: string;
     turnId?: string;
     timeoutMs?: number;
@@ -27,13 +27,59 @@ export type OpenBrowserUseWaitForLoadStateOptions = {
 export type OpenBrowserUseBrowserOptions = OpenBrowserUseClientOptions | {
     client: OpenBrowserUseClient;
 };
+export type OpenBrowserUseTextOptions = {
+    selector?: string;
+    maxChars?: number;
+};
+export type OpenBrowserUsePageInfo = {
+    title: string;
+    url: string;
+    readyState: string;
+    text: string;
+};
+export type OpenBrowserUseTextResult = {
+    text: string;
+};
+export type OpenBrowserUseSnapshotItem = {
+    index: number;
+    tag: string;
+    text: string;
+    type?: string;
+    href?: string;
+    selector?: string;
+};
+export type OpenBrowserUseSnapshotResult = {
+    items: OpenBrowserUseSnapshotItem[];
+};
+export type OpenBrowserUseScreenshotOptions = {
+    selector?: string;
+    fullPage?: boolean;
+};
+export type OpenBrowserUseScreenshotResult = {
+    data: string;
+    bytes: number;
+    format: "png";
+    tabId: number;
+    selector?: string;
+    clip?: JsonValue;
+};
+export type OpenBrowserUseInteractionResult = {
+    ok: boolean;
+    ref: string;
+    action?: "click" | "fill";
+    reason?: string;
+    tag?: string;
+    text?: string;
+    rect?: JsonValue;
+    valueLength?: number;
+};
 export declare class OpenBrowserUseClient {
     #private;
     readonly socketPath: string;
     readonly sessionId: string;
     readonly turnId: string;
     readonly timeoutMs: number;
-    constructor(options: OpenBrowserUseClientOptions);
+    constructor(options?: OpenBrowserUseClientOptions);
     connect(): Promise<this>;
     close(): void;
     onNotification(handler: NotificationHandler): () => void;
@@ -61,11 +107,11 @@ export declare class OpenBrowserUseClient {
     writeClipboard(tabId: number, items: JsonValue[]): Promise<JsonValue>;
     turnEnded(): Promise<JsonValue>;
 }
-export declare function connectOpenBrowserUse(options: OpenBrowserUseBrowserOptions): Promise<OpenBrowserUseBrowser>;
+export declare function connectOpenBrowserUse(options?: OpenBrowserUseBrowserOptions): Promise<OpenBrowserUseBrowser>;
 export declare class OpenBrowserUseBrowser {
     readonly client: OpenBrowserUseClient;
     readonly cdp: OpenBrowserUseCdp;
-    constructor(options: OpenBrowserUseBrowserOptions);
+    constructor(options?: OpenBrowserUseBrowserOptions);
     connect(): Promise<this>;
     close(): void;
     newTab(options?: OpenBrowserUseGotoOptions & {
@@ -82,16 +128,33 @@ export declare class OpenBrowserUseTab {
     goto(url: string, options?: OpenBrowserUseGotoOptions): Promise<JsonValue>;
     waitForLoadState(options?: OpenBrowserUseWaitForLoadStateOptions): Promise<void>;
     domSnapshot(): Promise<string>;
+    pageInfo(options?: OpenBrowserUseTextOptions): Promise<OpenBrowserUsePageInfo>;
+    text(options?: OpenBrowserUseTextOptions): Promise<OpenBrowserUseTextResult>;
+    snapshot(options?: {
+        limit?: number;
+    }): Promise<OpenBrowserUseSnapshotResult>;
+    screenshot(options?: OpenBrowserUseScreenshotOptions): Promise<OpenBrowserUseScreenshotResult>;
+    click(ref: string | number): Promise<OpenBrowserUseInteractionResult>;
+    fill(ref: string | number, text: string): Promise<OpenBrowserUseInteractionResult>;
     evaluate(expression: string, options?: {
         awaitPromise?: boolean;
     }): Promise<JsonValue>;
     close(): Promise<JsonValue>;
+    private resolveScreenshotClip;
 }
 export declare class OpenBrowserUseTabPlaywright {
     readonly tab: OpenBrowserUseTab;
     constructor(tab: OpenBrowserUseTab);
     waitForLoadState(options?: OpenBrowserUseWaitForLoadStateOptions): Promise<void>;
     domSnapshot(): Promise<string>;
+    pageInfo(options?: OpenBrowserUseTextOptions): Promise<OpenBrowserUsePageInfo>;
+    text(options?: OpenBrowserUseTextOptions): Promise<OpenBrowserUseTextResult>;
+    snapshot(options?: {
+        limit?: number;
+    }): Promise<OpenBrowserUseSnapshotResult>;
+    screenshot(options?: OpenBrowserUseScreenshotOptions): Promise<OpenBrowserUseScreenshotResult>;
+    click(ref: string | number): Promise<OpenBrowserUseInteractionResult>;
+    fill(ref: string | number, text: string): Promise<OpenBrowserUseInteractionResult>;
 }
 export declare class OpenBrowserUseCdp {
     #private;

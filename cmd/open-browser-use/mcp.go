@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/host"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/host"
 	"github.com/spf13/cobra"
 )
 
@@ -278,7 +278,58 @@ func mcpTools() []mcpTool {
 			Title:       "Read Page Info",
 			Description: "Read title, URL, readyState, and body text from a managed tab.",
 			InputSchema: objectSchema(map[string]any{
+				"tab_id":    integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"selector":  stringSchema("Optional CSS selector to read as text."),
+				"max_chars": integerSchema("Maximum text characters to return."),
+			}, nil),
+		},
+		{
+			Name:        "text",
+			Title:       "Read Page Text",
+			Description: "Read body text or selector text from a managed tab.",
+			InputSchema: objectSchema(map[string]any{
+				"tab_id":    integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"selector":  stringSchema("Optional CSS selector to read."),
+				"max_chars": integerSchema("Maximum characters to return."),
+			}, nil),
+		},
+		{
+			Name:        "snapshot",
+			Title:       "List Interactive Elements",
+			Description: "List interactive elements with ref indices for follow-up actions.",
+			InputSchema: objectSchema(map[string]any{
 				"tab_id": integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"limit":  integerSchema("Maximum interactive elements to return."),
+			}, nil),
+		},
+		{
+			Name:        "click",
+			Title:       "Click Element",
+			Description: "Click an element by a snapshot ref such as @3.",
+			InputSchema: objectSchema(map[string]any{
+				"tab_id": integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"ref":    stringSchema("Snapshot ref, for example @3 or 3."),
+			}, []string{"ref"}),
+		},
+		{
+			Name:        "fill",
+			Title:       "Fill Element",
+			Description: "Fill an input, textarea, select, or contenteditable element by snapshot ref.",
+			InputSchema: objectSchema(map[string]any{
+				"tab_id": integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"ref":    stringSchema("Snapshot ref, for example @5 or 5."),
+				"text":   stringSchema("Text to enter."),
+			}, []string{"ref", "text"}),
+		},
+		{
+			Name:        "screenshot",
+			Title:       "Take Screenshot",
+			Description: "Take a page or element screenshot and save it to a local PNG file.",
+			InputSchema: objectSchema(map[string]any{
+				"tab_id":    integerSchema("Optional Chrome tab id. Defaults to the current tab."),
+				"output":    stringSchema("Optional output file path."),
+				"selector":  stringSchema("Optional CSS selector to screenshot."),
+				"full_page": map[string]any{"type": "boolean", "description": "Capture the full page."},
 			}, nil),
 		},
 		{
@@ -435,23 +486,101 @@ func (server *mcpServer) callTool(params json.RawMessage) (map[string]any, error
 	if request.Arguments == nil {
 		request.Arguments = map[string]any{}
 	}
+	startedAt := time.Now()
 	output, err := server.runTool(request.Name, request.Arguments)
+	if request.Name != "run_action_plan" {
+		action := mcpTraceAction(request.Name)
+		_ = server.runner.writeTrace(0, action, actionRisk(action), server.mcpTraceTabID(request.Name, request.Arguments, output), startedAt, err)
+	}
 	if err != nil {
 		return mcpToolErrorResult(err.Error()), nil
 	}
 	return mcpToolResult(output)
 }
 
+func mcpTraceAction(toolName string) string {
+	switch toolName {
+	case "user_tabs":
+		return "user-tabs"
+	case "open_tab":
+		return "open-tab"
+	case "claim_tab":
+		return "claim-tab"
+	case "wait_load":
+		return "wait-load"
+	case "page_info":
+		return "page-info"
+	case "move_mouse":
+		return "move-mouse"
+	case "wait_file_chooser":
+		return "wait-file-chooser"
+	case "set_file_chooser_files":
+		return "set-file-chooser-files"
+	case "finalize_tabs":
+		return "finalize-tabs"
+	case "name_session":
+		return "name-session"
+	case "turn_ended":
+		return "turn-ended"
+	case "run_action_plan":
+		return "run-action-plan"
+	default:
+		return toolName
+	}
+}
+
+func (server *mcpServer) mcpTraceTabID(toolName string, arguments map[string]any, output any) int {
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err == nil && ok {
+		return tabID
+	}
+	if tabID, ok := tabIDFromToolOutput(output); ok {
+		return tabID
+	}
+	switch toolName {
+	case "navigate", "wait_load", "page_info", "text", "snapshot", "click", "fill", "screenshot", "cdp", "move_mouse", "wait_file_chooser":
+		return server.runner.currentTabID
+	default:
+		return 0
+	}
+}
+
+func tabIDFromToolOutput(output any) (int, bool) {
+	result, ok := output.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	if tabID, ok := numberAsInt(result["tabId"]); ok {
+		return tabID, true
+	}
+	tab, ok := result["tab"].(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	return numberAsInt(tab["id"])
+}
+
 func (server *mcpServer) runTool(name string, arguments map[string]any) (any, error) {
 	switch name {
 	case "ping":
-		return server.invoke("ping", map[string]any{})
+		response, err := server.invoke("ping", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("ping", response), nil
 	case "info":
 		return server.invoke("getInfo", map[string]any{})
 	case "tabs":
-		return server.invoke("getTabs", map[string]any{})
+		response, err := server.invoke("getTabs", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("getTabs", response), nil
 	case "user_tabs":
-		return server.invoke("getUserTabs", map[string]any{})
+		response, err := server.invoke("getUserTabs", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("getUserTabs", response), nil
 	case "history":
 		return server.runHistoryTool(arguments)
 	case "open_tab":
@@ -465,13 +594,26 @@ func (server *mcpServer) runTool(name string, arguments map[string]any) (any, er
 		if err == nil {
 			server.runner.currentTabID = tabID
 		}
-		return response, err
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("claimUserTab", response), nil
 	case "navigate":
 		return server.runNavigateTool(arguments)
 	case "wait_load":
 		return server.runWaitLoadTool(arguments)
 	case "page_info":
 		return server.runPageInfoTool(arguments)
+	case "text":
+		return server.runTextTool(arguments)
+	case "snapshot":
+		return server.runSnapshotTool(arguments)
+	case "click":
+		return server.runClickTool(arguments)
+	case "fill":
+		return server.runFillTool(arguments)
+	case "screenshot":
+		return server.runScreenshotTool(arguments)
 	case "cdp":
 		return server.runCDPTool(arguments)
 	case "move_mouse":
@@ -485,15 +627,27 @@ func (server *mcpServer) runTool(name string, arguments map[string]any) (any, er
 		if err != nil {
 			return nil, err
 		}
-		return server.invoke("finalizeTabs", map[string]any{"keep": keep})
+		response, err := server.invoke("finalizeTabs", map[string]any{"keep": keep})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("finalizeTabs", response), nil
 	case "name_session":
 		name, err := requiredStringArg(arguments, "name")
 		if err != nil {
 			return nil, err
 		}
-		return server.invoke("nameSession", map[string]any{"name": name})
+		response, err := server.invoke("nameSession", map[string]any{"name": name})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("nameSession", response), nil
 	case "turn_ended":
-		return server.invoke("turnEnded", map[string]any{})
+		response, err := server.invoke("turnEnded", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+		return normalizeInvokeResult("turnEnded", response), nil
 	case "call":
 		method, err := requiredStringArg(arguments, "method")
 		if err != nil {
@@ -520,6 +674,27 @@ func (server *mcpServer) invoke(method string, params map[string]any) (map[strin
 	return response, err
 }
 
+func normalizeInvokeResult(method string, response map[string]any) any {
+	result, _ := response["result"]
+	return normalizeJSONResult(method, result)
+}
+
+func normalizeActionResult(tool string, response map[string]any) any {
+	switch tool {
+	case "open_tab", "wait_load", "text", "snapshot", "click", "fill", "screenshot":
+		return response["result"]
+	case "navigate":
+		result, _ := response["result"].(map[string]any)
+		return map[string]any{"navigate": result}
+	case "page_info":
+		result, _ := response["result"].(map[string]any)
+		cdpResult, _ := result["result"].(map[string]any)
+		return cdpResult["value"]
+	default:
+		return response
+	}
+}
+
 func (server *mcpServer) runHistoryTool(arguments map[string]any) (any, error) {
 	limit := 100
 	if value, ok, err := optionalIntArg(arguments, "limit"); err != nil {
@@ -537,7 +712,11 @@ func (server *mcpServer) runHistoryTool(arguments map[string]any) (any, error) {
 	if to := optionalStringArg(arguments, "to"); to != "" {
 		params["to"] = to
 	}
-	return server.invoke("getUserHistory", params)
+	response, err := server.invoke("getUserHistory", params)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeInvokeResult("getUserHistory", response), nil
 }
 
 func (server *mcpServer) runOpenTabTool(arguments map[string]any) (any, error) {
@@ -546,7 +725,10 @@ func (server *mcpServer) runOpenTabTool(arguments map[string]any) (any, error) {
 		args = append(args, url)
 	}
 	response, _, err := server.runner.runOpenTabAction(args)
-	return response, err
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("open_tab", response), nil
 }
 
 func (server *mcpServer) runNavigateTool(arguments map[string]any) (any, error) {
@@ -561,7 +743,10 @@ func (server *mcpServer) runNavigateTool(arguments map[string]any) (any, error) 
 		args = append([]string{"--tab-id", strconv.Itoa(tabID)}, args...)
 	}
 	response, _, err := server.runner.runNavigateAction(args)
-	return response, err
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("navigate", response), nil
 }
 
 func (server *mcpServer) runWaitLoadTool(arguments map[string]any) (any, error) {
@@ -575,7 +760,10 @@ func (server *mcpServer) runWaitLoadTool(arguments map[string]any) (any, error) 
 		args = append([]string{"--tab-id", strconv.Itoa(tabID)}, args...)
 	}
 	response, _, err := server.runner.runWaitLoadAction(args)
-	return response, err
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("wait_load", response), nil
 }
 
 func (server *mcpServer) runPageInfoTool(arguments map[string]any) (any, error) {
@@ -585,8 +773,123 @@ func (server *mcpServer) runPageInfoTool(arguments map[string]any) (any, error) 
 	} else if ok {
 		args = append(args, "--tab-id", strconv.Itoa(tabID))
 	}
+	if selector := optionalStringArg(arguments, "selector"); selector != "" {
+		args = append(args, "--selector", selector)
+	}
+	if maxChars, ok, err := optionalIntArg(arguments, "max_chars"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--max-chars", strconv.Itoa(maxChars))
+	}
 	response, _, err := server.runner.runPageInfoAction(args)
-	return response, err
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("page_info", response), nil
+}
+
+func (server *mcpServer) runTextTool(arguments map[string]any) (any, error) {
+	args := []string{}
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--tab-id", strconv.Itoa(tabID))
+	}
+	if selector := optionalStringArg(arguments, "selector"); selector != "" {
+		args = append(args, "--selector", selector)
+	}
+	if maxChars, ok, err := optionalIntArg(arguments, "max_chars"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--max-chars", strconv.Itoa(maxChars))
+	}
+	response, _, err := server.runner.runTextAction(args)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("text", response), nil
+}
+
+func (server *mcpServer) runSnapshotTool(arguments map[string]any) (any, error) {
+	args := []string{}
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--tab-id", strconv.Itoa(tabID))
+	}
+	if limit, ok, err := optionalIntArg(arguments, "limit"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--limit", strconv.Itoa(limit))
+	}
+	response, _, err := server.runner.runSnapshotAction(args)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("snapshot", response), nil
+}
+
+func (server *mcpServer) runClickTool(arguments map[string]any) (any, error) {
+	ref, err := requiredStringArg(arguments, "ref")
+	if err != nil {
+		return nil, err
+	}
+	args := []string{ref}
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append([]string{"--tab-id", strconv.Itoa(tabID)}, args...)
+	}
+	response, _, err := server.runner.runClickAction(args)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("click", response), nil
+}
+
+func (server *mcpServer) runFillTool(arguments map[string]any) (any, error) {
+	ref, err := requiredStringArg(arguments, "ref")
+	if err != nil {
+		return nil, err
+	}
+	text, err := requiredStringArg(arguments, "text")
+	if err != nil {
+		return nil, err
+	}
+	args := []string{ref, text}
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append([]string{"--tab-id", strconv.Itoa(tabID)}, args...)
+	}
+	response, _, err := server.runner.runFillAction(args)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("fill", response), nil
+}
+
+func (server *mcpServer) runScreenshotTool(arguments map[string]any) (any, error) {
+	args := []string{}
+	if tabID, ok, err := optionalIntArg(arguments, "tab_id"); err != nil {
+		return nil, err
+	} else if ok {
+		args = append(args, "--tab-id", strconv.Itoa(tabID))
+	}
+	if output := optionalStringArg(arguments, "output"); output != "" {
+		args = append(args, "--output", output)
+	}
+	if selector := optionalStringArg(arguments, "selector"); selector != "" {
+		args = append(args, "--selector", selector)
+	}
+	if fullPage := optionalBoolArg(arguments, "full_page"); fullPage {
+		args = append(args, "--full-page")
+	}
+	response, _, err := server.runner.runScreenshotAction(args)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeActionResult("screenshot", response), nil
 }
 
 func (server *mcpServer) runCDPTool(arguments map[string]any) (any, error) {
@@ -728,6 +1031,11 @@ func optionalIntArg(arguments map[string]any, name string) (int, bool, error) {
 	default:
 		return 0, false, fmt.Errorf("%s must be an integer", name)
 	}
+}
+
+func optionalBoolArg(arguments map[string]any, name string) bool {
+	value, _ := arguments[name].(bool)
+	return value
 }
 
 func requiredFloatArg(arguments map[string]any, name string) (float64, error) {

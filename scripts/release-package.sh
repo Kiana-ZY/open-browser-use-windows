@@ -3,8 +3,16 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${repo_root}/scripts/runtime-tools.sh"
+
+node_bin="$(find_node || true)"
+if [[ -z "${node_bin}" ]]; then
+  echo "node is required to package release artifacts" >&2
+  exit 127
+fi
+
 dist_dir="${repo_root}/dist"
-version="${OPEN_BROWSER_USE_VERSION:-$(node -p "require('${repo_root}/packages/open-browser-use-cli/package.json').version")}"
+version="${OPEN_BROWSER_USE_VERSION:-$("${node_bin}" -p "require('${repo_root}/packages/open-browser-use-cli/package.json').version")}"
 
 rm -rf "${dist_dir}"
 mkdir -p "${dist_dir}"

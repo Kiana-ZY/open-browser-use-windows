@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/host"
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/host"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 )
 
 const (
 	DefaultSessionID          = "open-browser-use-go"
+	DefaultRelayPath          = "127.0.0.1:19832"
 	DefaultTimeout            = 10 * time.Second
 	DefaultNavigationTimeout  = 10 * time.Second
 	LoadStateDOMContentLoaded = "domcontentloaded"
@@ -274,7 +276,10 @@ func ConnectActive(options Options) (*Browser, error) {
 	if options.SocketPath == "" {
 		socketPath, err := ActiveSocketPath(options.SocketDir)
 		if err != nil {
-			return nil, err
+			if runtime.GOOS != "windows" {
+				return nil, err
+			}
+			socketPath = DefaultRelayPath
 		}
 		options.SocketPath = socketPath
 	}
@@ -300,9 +305,13 @@ func (c *Client) connectLocked() error {
 	if socketPath == "" {
 		record, err := host.ReadActiveSocketRecord(c.options.SocketDir)
 		if err != nil {
-			return err
+			if runtime.GOOS != "windows" {
+				return err
+			}
+			socketPath = DefaultRelayPath
+		} else {
+			socketPath = record.SocketPath
 		}
-		socketPath = record.SocketPath
 	}
 	conn, err := host.DialSocket(socketPath, c.options.Timeout)
 	if err != nil {

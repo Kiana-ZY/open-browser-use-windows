@@ -21,7 +21,7 @@
 
 - commit 尽量保持范围清晰、描述准确。
 - 提交或发 PR 前，确认文档、示例、脚本和 history 是否已经反映最终状态。
-- 复杂或高风险改动，先落一份 execution plan 到 `docs/exec-plans/`。
+- 复杂或高风险改动，先落一份 execution plan 到 `archive/process/docs/exec-plans/`。
 - 评审里尽量引用仓库内文件，不要依赖只有少数人知道的上下文。
 
 ## 测试与验证

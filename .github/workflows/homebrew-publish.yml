@@ -12,7 +12,7 @@ jobs:
   update-homebrew-tap:
     runs-on: ubuntu-latest
     env:
-      HOMEBREW_TAP_REPOSITORY: iFurySt/homebrew-open-browser-use
+      HOMEBREW_TAP_REPOSITORY: Kiana-ZY/homebrew-open-browser-use-windows
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

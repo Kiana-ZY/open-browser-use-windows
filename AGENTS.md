@@ -1,38 +1,37 @@
-# open-browser-use
+# Open Browser Use for Windows
 
-这个仓库是一个面向 Agent 协作开发的基础模板。
+这个仓库实现 Open Browser Use for Windows：面向 Chrome / Microsoft Edge 的
+真实浏览器自动化基础设施。命令简称仍然是 `obu`。
 
-`AGENTS.md` 故意保持简短，只负责做导航，不负责塞满所有规则。仓库内的 `docs/` 才是本地知识的正式来源。
-
-如果一次代码或流程变更会让某份文档过期，就在同一轮任务里顺手把它改掉。
+`AGENTS.md` 只做导航。正式项目知识在 `docs/`，非核心过程和研究资料在
+`archive/`。
 
 ## 每轮开始先读
 
 - `docs/REPO_COLLAB_GUIDE.md`：仓库级协作、提交、文档同步与测试约定。
-- `docs/ARCHITECTURE.md`：仓库整体结构和预期边界。
-- `docs/design-docs/core-beliefs.md`：Agent-first 的工作原则和这个模板的设计出发点。
-
-## 代码改完前要读
-
-- `docs/HISTORY_GUIDE.md`：什么时候记 history、怎么命名、怎么脱敏。
-- `docs/QUALITY_SCORE.md`：当前质量分层和主要短板。
+- `docs/ARCHITECTURE.md`：当前系统结构和边界。
+- `docs/SECURITY.md`：真实浏览器控制、权限和安全默认约束。
 
 ## 按任务需要选读
 
-- `docs/PLANS_GUIDE.md`：什么时候要写 execution plan，怎么维护。
-- `docs/PRODUCT_SENSE.md`：产品价值、取舍方式和优先级判断。
-- `docs/RELIABILITY.md`：运行稳定性、观测性和上线前的基本要求。
-- `docs/SECURITY.md`：认证、数据处理、外部集成等安全默认约束。
-- `docs/SUPPLY_CHAIN_SECURITY.md`：依赖、SBOM、制品 provenance 和仓库级供应链安全默认做法。
-- `docs/CICD.md`：仓库的 CI/CD 骨架以及后续如何接入真实项目。
-- `docs/FRONTEND.md`：如果仓库包含前端界面，这里记录对应规范。
-- `CONTRIBUTING.md`：提 PR 前后的默认检查项和协作要求。
-- `docs/releases/README.md`：如何维护面向用户的发布记录。
-- `docs/references/README.md`：沉淀到仓库里的外部参考资料。
+- `docs/CODEX_AND_CLAUDE_USAGE.md`：Codex / Claude Code skill + MCP 接入。
+- `docs/CHROME_WEB_STORE_RELEASE.md`：浏览器扩展打包和商店发布。
+- `docs/CICD.md`：CI、release、npm、PyPI 和 GitHub Actions 约定。
+- `docs/RELIABILITY.md`：运行稳定性和错误恢复。
+- `docs/SUPPLY_CHAIN_SECURITY.md`：依赖、SBOM、provenance 和 action pinning。
+- `archive/README.md`：已归档的历史、计划、研究资料和本地快照。
 
 ## 工作规则
 
-- 优先选择小而清晰、对仓库和 Agent 都友好的抽象。
-- prompt、规则、架构约束尽量都版本化落在仓库里。
-- 复杂任务不要只靠聊天上下文，应该落 execution plan。
-- 完成的代码变更要记到 `docs/histories/`。
+- 优先选择小而清晰、对 Windows 和 Agent 都友好的抽象。
+- prompt、规则、架构约束尽量版本化落在仓库里。
+- 如果一次代码或流程变更会让文档过期，就在同一轮任务里同步更新。
+- 不要把 `archive/` 当作运行路径依赖；它只保留追溯材料。
+- 完成较大变更时，在 `archive/process/docs/histories/` 追加 history。
+
+## 浏览器检查 fallback
+
+- 用户提到 `@obu`、`@open-browser-use`、Open Browser Use，或要求真实 Chrome / Edge profile 浏览器自动化时，使用 `skills/open-browser-use/` 的流程。
+- 开发 Web / 前端时，如果 Codex app 内置 Browser / `@browser` 无法启动、无法连接或不能访问目标页面，则使用 Open Browser Use 作为 fallback。
+- 为了控制 token，优先用 `page-info --max-chars 2000`、`text --selector main --max-chars 2000`、`snapshot --limit 50` 和 `screenshot --json`；不要默认抓取整页 DOM 或超长正文。
+- OBU 浏览器任务必须使用唯一 session id，开始先 `obu ping`，结束时执行 `obu finalize-tabs --keep "[]"`，除非用户明确要保留 handoff / deliverable tab。

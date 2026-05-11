@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ifuryst/open-codex-browser-use/internal/wire"
+	"github.com/Kiana-ZY/open-browser-use-windows/internal/wire"
 )
 
 func skipUnixOnWindows(t *testing.T) {

@@ -6,25 +6,30 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 extension_dir="${repo_root}/apps/chrome-extension"
 dist_dir="${repo_root}/dist/chrome-extension"
 
-if ! command -v node >/dev/null 2>&1; then
+source "${repo_root}/scripts/runtime-tools.sh"
+
+node_bin="$(find_node || true)"
+if [[ -z "${node_bin}" ]]; then
   echo "node is required to validate the Chrome extension package" >&2
   exit 1
 fi
 
-if ! command -v zip >/dev/null 2>&1; then
-  echo "zip is required to package the Chrome extension" >&2
-  exit 1
-fi
+zip_directory_contents() {
+  local source_dir="$1"
+  local output_path="$2"
+
+  "${node_bin}" "${repo_root}/scripts/zip-tool.mjs" create "${source_dir}" "${output_path}"
+}
 
 manifest_path="${extension_dir}/manifest.json"
-version="$(node -e 'const fs=require("fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(manifest.version);' "${manifest_path}")"
+version="$("${node_bin}" -e 'const fs=require("fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(manifest.version);' "${manifest_path}")"
 package_name="open-browser-use-chrome-extension-${version}.zip"
 zip_path="${dist_dir}/${package_name}"
 crx_name="open-browser-use-chrome-extension-${version}.crx"
 crx_path="${dist_dir}/${crx_name}"
 beta_extension_public_key="MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBLT95WWVnHYH0pOBRH/eP+BWtlKVmLE/RHkERUTI2+PGDSQrbWVabmTw4CZ3yhjko04dijSX2Az8cnp65xh23Dh5mP5TCtiP9LexRFJokd8EsyeFdtKamMYr0hF1ZUc1/8ZpLnetAU65ZMB9VzHQBqpJWeUwuIvecgfRtGklDgJMjnvcq5J6pttZrzWrI/2B0BNufwsTQfEt7qLtDFPHXmUdtZfQbc2EfYFvkXLDAXicYviiocedrsAGIKUxpyQegobhUFL+tNLOuXKBpZlLFQn3xgm5CyGZwN6bueiV/S7reigVTKAMQ8BX0eacT22e8r0UzjsjkugeHOIonIvtQIDAQAB"
 
-node - "${manifest_path}" "${extension_dir}" <<'NODE'
+"${node_bin}" - "${manifest_path}" "${extension_dir}" <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
@@ -95,9 +100,9 @@ if (errors.length > 0) {
 }
 NODE
 
-node --check "${extension_dir}/background.js" >&2
-node --check "${extension_dir}/content-cursor.js" >&2
-node --check "${extension_dir}/popup.js" >&2
+"${node_bin}" --check "${extension_dir}/background.js" >&2
+"${node_bin}" --check "${extension_dir}/content-cursor.js" >&2
+"${node_bin}" --check "${extension_dir}/popup.js" >&2
 
 rm -rf "${dist_dir}"
 mkdir -p "${dist_dir}"
@@ -121,7 +126,7 @@ popup.html
 popup.js
 EOF
 
-node - "${staging_dir}/manifest.json" "${beta_extension_public_key}" <<'NODE'
+"${node_bin}" - "${staging_dir}/manifest.json" "${beta_extension_public_key}" <<'NODE'
 const fs = require("fs");
 
 const manifestPath = process.argv[2];
@@ -131,31 +136,17 @@ manifest.key = key;
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 
-(
-  cd "${staging_dir}"
-  zip -q -r "${zip_path}" \
-    manifest.json \
-    background.js \
-    content-cursor.js \
-    icons/icon-16.png \
-    icons/icon-32.png \
-    icons/icon-48.png \
-    icons/icon-128.png \
-    images/cursor-chat.png \
-    popup.css \
-    popup.html \
-    popup.js
-)
+zip_directory_contents "${staging_dir}" "${zip_path}"
 
 rm -rf "${staging_dir}"
 
-node "${repo_root}/scripts/package-chrome-extension-crx.mjs" \
+"${node_bin}" "${repo_root}/scripts/package-chrome-extension-crx.mjs" \
   --zip "${zip_path}" \
   --output "${crx_path}" \
   --metadata "${dist_dir}/crx-manifest.json" \
   >&2
 
-node - "${manifest_path}" "${zip_path}" "${crx_path}" "${dist_dir}/package-manifest.json" <<'NODE'
+"${node_bin}" - "${manifest_path}" "${zip_path}" "${crx_path}" "${dist_dir}/package-manifest.json" <<'NODE'
 const crypto = require("crypto");
 const fs = require("fs");
 

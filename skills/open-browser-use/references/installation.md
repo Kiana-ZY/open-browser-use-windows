@@ -16,9 +16,9 @@ Use one of the supported package routes:
 npm install -g open-browser-use
 ```
 
-```sh
-brew install iFurySt/open-browser-use/open-browser-use
-```
+Homebrew publishing is repository-specific. If a tap is configured for this
+fork, install from that tap; otherwise use npm, a GitHub Release binary, or a
+local build.
 
 Verify:
 
@@ -75,7 +75,9 @@ open-browser-use manifest
 - On Windows, pass `--browser edge` to configure Microsoft Edge instead of Chrome.
 - macOS and Windows can require the user to approve or enable the extension after the browser sees it.
 - Linux external extension registration can require elevated permissions depending on installation paths.
-- Native messaging host name is `com.ifuryst.open_browser_use.extension`.
+- Native messaging host name is `com.ifuryst.open_browser_use.extension`; this
+  compatibility identifier is kept stable even though the project name is Open
+  Browser Use for Windows.
 - On Unix-like systems, the default socket is under `/tmp/open-browser-use/`. On Windows, the relay uses TCP on `127.0.0.1:19832`.
 
 ## Verification
