@@ -7,46 +7,44 @@ description: Browser automation through the user's real Edge/Chrome browser. Sup
 
 OBU controls the user's real Microsoft Edge browser with all their cookies and logins.
 
-## Core Workflow
+## Session Bootstrap
+
+Every browser task starts with this sequence. Don't skip steps.
 
 ```cmd
-REM 1. Start a session
+REM 1. Check connectivity (retry once if it fails)
+obu ping
+REM If ping fails: wait 2s, then obu ping again. Still failing? See Troubleshooting.
+
+REM 2. Start a session
 SET OBU_SESSION_ID=obu-<task>-<timestamp>
 
-REM 2. Open a page
+REM 3. Open or claim a tab
 obu open-tab --url <url>
-SET OBU_TAB_ID=<returned-tab-id>
+REM Save the returned tab id
+SET OBU_TAB_ID=<returned-id>
 
-REM 3. Wait for load
+REM 4. Wait for page load
 sleep 2
 obu wait
-
-REM 4. Snapshot the page (get interactive elements with @N refs)
-obu snapshot
-
-REM 5. Interact using refs
-obu click @3
-obu fill @5 "search text"
-
-REM 6. Read page content
-obu text --json
-
-REM 7. Finalize
-obu finalize-tabs --keep "[]"
 ```
 
-## Page Interaction (snapshot → click/fill)
+After bootstrap, `OBU_TAB_ID` is set — `snapshot`, `text`, `click`, `fill`, `wait`, `screenshot` all use it automatically.
 
-The `snapshot` command lists all interactive elements on the page with **@N ref indices**. These refs are deterministic — they point to exact DOM elements. Use them instead of fragile CSS selectors or raw CDP.
+## Page Interaction
+
+### Snapshot → click/fill (preferred)
+
+When you need to interact with page elements — click buttons, fill forms, navigate menus — use the snapshot workflow. It's faster and more reliable than raw CDP.
 
 ```cmd
-REM Get interactive elements
+REM Get the page's interactive elements
 obu snapshot
 REM Output:
 REM   @1 button "Login"
 REM   @2 input "Username"
 REM   @3 input "Password"
-REM   @4 a "Forgot password"
+REM   @4 a "Sign up"
 
 REM Interact using refs
 obu click @1
@@ -54,74 +52,99 @@ obu fill @2 "admin"
 obu fill @3 "pass123"
 ```
 
-After page navigation or DOM changes, re-run `obu snapshot` to get fresh refs.
+### Read text
+
+When you just need to extract page content — no interaction needed:
+
+```cmd
+obu text --json
+```
+
+### Decision: snapshot vs text vs cdp
+
+| Situation | Use |
+|-----------|-----|
+| Need to click, fill, or find elements | `obu snapshot` then `click @N` / `fill @N` |
+| Just need page text content | `obu text --json` |
+| Need specific data (title, URL, attribute) | `obu cdp --method Runtime.evaluate ...` |
+| Multi-step workflow | `obu run` action plan |
+| Screenshot for visual check | `obu screenshot --output file.png` |
+
+### Snapshot Discipline
+
+- **Take a fresh snapshot after**: navigation, page reload, opening/closing modals, form submission, or any DOM change.
+- **Reuse the snapshot**: if the page hasn't changed since your last snapshot, the refs are still valid.
+- **Stale refs**: if `click @N` does nothing or targets wrong element, re-run `obu snapshot`.
+- **100 element limit**: if the target isn't in the first 100 elements, scope with navigation or use CDP.
 
 ## All Commands
 
-| Command | Description |
-|---------|-------------|
-| `obu info` | Extension status |
-| `obu ping` | Quick connectivity test |
+| Command | Use |
+|---------|-----|
+| `obu ping` | Quick connectivity check |
+| `obu info` | Extension status and version |
 | `obu user-tabs` | List all browser tabs |
-| `obu tabs` | List session tabs |
-| `obu open-tab --url URL` | Open new tab (returns tab-id) |
-| `obu claim-tab --tab-id ID` | Take over existing tab |
+| `obu open-tab --url URL` | Open new tab → returns tab id |
+| `obu claim-tab --tab-id ID` | Take over existing user tab |
 | `obu navigate --tab-id ID --url URL` | Go to URL in tab |
 | `obu snapshot` | List interactive elements with @N refs |
 | `obu click @N` | Click element by ref |
-| `obu fill @N TEXT` | Type text into input by ref |
+| `obu fill @N TEXT` | Type into input by ref |
 | `obu text --json` | Get page body text |
 | `obu screenshot --output file.png` | Screenshot to file |
-| `obu wait` | Wait for page load |
-| `obu history --query "..." --limit N` | Search history |
+| `obu wait` | Wait for page readyState complete |
+| `obu history --query "..."` | Search browser history |
 | `obu cdp --method M --params JSON` | Raw CDP (last resort) |
-| `obu finalize-tabs --keep JSON` | Close/handoff tabs |
+| `obu finalize-tabs --keep JSON` | Close or handoff session tabs |
+| `obu run -c "..."` | Multi-step action plan |
 
-Add `--json` to any command for clean machine-readable output.
+All commands accept `--json` for machine-readable output and respect `OBU_SESSION_ID` / `OBU_TAB_ID` env vars.
 
-## Environment Variables
+## Error Recovery
+
+| Symptom | Action |
+|---------|--------|
+| `ping` fails | Wait 2s, retry once. Still failing → restart Edge. |
+| `open-tab` returns no id | Host may have disconnected. Wait 2s, retry. |
+| `wait` times out | Page load is slow. Use `sleep 3` then try `text` directly. |
+| `snapshot` returns nothing | Page not loaded yet. `sleep 2` then retry. |
+| `click @N` does nothing | Re-run `obu snapshot` — refs are stale. |
+| `text` returns empty | Page may be a SPA. Try `sleep 2` then retry. |
+| `TCP relay not available` | Host process not running. Restart Edge. |
+| Command hangs | Extension may be idle. Click the OBU extension icon in Edge toolbar. |
+
+## Session Cleanup
+
+At the end of every browser turn, finalize tabs:
 
 ```cmd
-SET OBU_SESSION_ID=obu-task-001    REM All commands auto-use this
-SET OBU_TAB_ID=16952115            REM text/snapshot/click/fill auto-use this
+REM Close all session tabs (default)
+obu finalize-tabs --keep "[]"
+
+REM Keep a tab for the user to inspect
+obu finalize-tabs --keep "[{\"tabId\":N,\"status\":\"deliverable\"}]"
+
+REM Keep a tab for continued work
+obu finalize-tabs --keep "[{\"tabId\":N,\"status\":\"handoff\"}]"
 ```
 
-After `open-tab`, set `OBU_TAB_ID` from the returned id. After that, `snapshot`, `text`, `click`, `fill`, `wait`, `screenshot` all use it automatically — no need to repeat `--tab-id`.
+- Do not call any OBU commands after finalizing.
+- Omit research, intermediate, and source tabs by default.
+- Keep only tabs the user explicitly needs.
 
 ## Operating Rules
 
-- Treat the browser as the user's real profile. Never inspect cookies or passwords.
+- Treat the browser as the user's real profile. Never inspect cookies, passwords, or session data.
 - Ask before submitting forms, making purchases, uploading files, or deleting.
-- Never guess tab IDs. List with `user-tabs` first, then use returned IDs.
-- Set `OBU_SESSION_ID` once per task. All commands pick it up.
-- Set `OBU_TAB_ID` after opening/claiming a tab. Subcommands use it automatically.
-- Re-run `obu snapshot` after navigation or DOM changes.
-- Finalize tabs at end of every turn. Default to `--keep "[]"`.
-- Use `obu cdp` only when no convenience command exists.
-
-## Tab Lifecycle
-
-1. Create session ID once: `SET OBU_SESSION_ID=obu-task-001`
-2. Open or claim tabs as needed
-3. Set `OBU_TAB_ID` from returned tab id
-4. Operate: snapshot → click/fill → text
-5. Finalize: `obu finalize-tabs --keep "[]"`
-
-Deliverable tabs: `--keep "[{\"tabId\":N,\"status\":\"deliverable\"}]"` — moved to user's "Open Browser Use" group.
-Handoff tabs: `--keep "[{\"tabId\":N,\"status\":\"handoff\"}]"` — kept for continued work.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| `TCP relay not available` | Restart Edge |
-| Command times out | Click the extension icon in Edge toolbar |
-| `wait` times out | Use `sleep 2` before `wait` |
-| `snapshot` returns nothing | Page may not be loaded; run `sleep 2` then retry |
-| `click @N` does nothing | Re-run `snapshot` — refs may be stale after navigation |
+- Never guess tab IDs — always list with `user-tabs` first.
+- One session per task. Don't reuse `obu-cli`.
+- Run `obu ping` at the start of every browser task. Retry once on failure.
+- After `open-tab` or `claim-tab`, set `OBU_TAB_ID` from the returned id.
+- Re-run `obu snapshot` after any page navigation or DOM state change.
+- Finalize tabs at the end of every turn.
 
 ## References
 
-- [references/installation.md](references/installation.md): setup (already configured)
+- [references/installation.md](references/installation.md): setup guide (already configured)
 - [references/sdk-and-protocol.md](references/sdk-and-protocol.md): Python/Go SDK details
 - [references/troubleshooting.md](references/troubleshooting.md): deeper debugging
