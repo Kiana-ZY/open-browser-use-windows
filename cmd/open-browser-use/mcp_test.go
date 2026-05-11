@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,9 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 }
 
 func TestMCPToolCallInvokesBrowserSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows")
+	}
 	socketDir, err := os.MkdirTemp("/tmp", "obu-mcp-test-")
 	if err != nil {
 		t.Fatal(err)

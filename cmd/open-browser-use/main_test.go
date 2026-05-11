@@ -120,7 +120,7 @@ func TestInstallNativeManifestCreatesStableLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manifestPath, err := installNativeManifest("", targetPath, "")
+	manifestPath, err := installNativeManifest("chrome", "", targetPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestCobraInstallManifestDefaultsToStoreExtension(t *testing.T) {
 
 func TestInstallChromeExternalExtensionWritesWebStoreHint(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), defaultChromeExtensionID+".json")
-	path, err := installChromeExternalExtension("", outputPath)
+	path, err := installChromeExternalExtension("chrome", "", outputPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestCobraSetupBetaUsesProvidedZIP(t *testing.T) {
 	if !strings.Contains(got, "Extension id: "+expectedExtensionID) {
 		t.Fatalf("expected setup beta output to mention unpacked extension id, got %q", got)
 	}
-	if !strings.Contains(got, "Drag the ZIP file into the Chrome extensions page") && !strings.Contains(got, "All set.") {
+	if !strings.Contains(got, "Drag the ZIP file into the Chrome extensions page") && !strings.Contains(got, "Drag the ZIP file into the Edge extensions page") && !strings.Contains(got, "All set.") {
 		t.Fatalf("expected setup beta output to mention manual install or connected status, got %q", got)
 	}
 	manifestPath := filepath.Join(home, "Library/Application Support/Google/Chrome/NativeMessagingHosts", host.NativeHostName+".json")
@@ -330,7 +330,7 @@ func TestDetectInstalledChromeExtensionFromProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	detected, ok := detectInstalledChromeExtension()
+	detected, ok := detectInstalledChromeExtension("chrome")
 	if !ok {
 		t.Fatal("expected installed extension to be detected")
 	}
@@ -392,6 +392,9 @@ func TestCobraUnknownCommand(t *testing.T) {
 }
 
 func TestInvokeRemovesStaleActiveSocketRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket cleanup logic not used on Windows")
+	}
 	socketDir := t.TempDir()
 	socketPath := filepath.Join(socketDir, "missing.sock")
 	if err := host.WriteActiveSocketRecord(socketDir, socketPath); err != nil {
@@ -411,6 +414,9 @@ func TestInvokeRemovesStaleActiveSocketRecord(t *testing.T) {
 }
 
 func TestInvokeScansSocketDirWhenActiveRecordMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket scan is not used on Windows")
+	}
 	socketDir, err := os.MkdirTemp("/tmp", "obu-socket-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -487,6 +493,9 @@ func TestInvokeScansSocketDirWhenActiveRecordMissing(t *testing.T) {
 }
 
 func TestInvokeCleansStaleSocketFilesDuringScan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket scan is not used on Windows")
+	}
 	socketDir, err := os.MkdirTemp("/tmp", "obu-socket-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -556,6 +565,9 @@ func TestInvokeCleansStaleSocketFilesDuringScan(t *testing.T) {
 }
 
 func TestCobraRunActionPlan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket action plan test not compatible with Windows TCP relay")
+	}
 	socketPath := filepath.Join(t.TempDir(), "obu.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -698,6 +710,9 @@ finalize-tabs []
 }
 
 func TestInvokeWithOptionsUsesSessionID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
 	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
 	defer os.Remove(socketPath)
 	listener, err := net.Listen("unix", socketPath)

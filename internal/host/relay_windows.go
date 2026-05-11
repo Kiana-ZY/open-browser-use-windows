@@ -27,8 +27,10 @@ func listenSocket(socketPath string) (net.Listener, error) {
 }
 
 func dialSocket(socketPath string, timeout time.Duration) (net.Conn, error) {
-	// On Windows, use TCP on localhost
-	addr := fmt.Sprintf("127.0.0.1:%d", TCPPort)
+	addr := socketPath
+	if addr == "" || addr == "tcp://open-browser-use" {
+		addr = fmt.Sprintf("127.0.0.1:%d", TCPPort)
+	}
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", addr, err)

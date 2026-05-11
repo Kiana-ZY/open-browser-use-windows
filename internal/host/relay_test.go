@@ -7,13 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/ifuryst/open-codex-browser-use/internal/wire"
 )
 
+func skipUnixOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain socket not available on Windows")
+	}
+}
+
 func TestRelayRemapsRequestIDs(t *testing.T) {
+	skipUnixOnWindows(t)
 	hostToExtensionReader, hostToExtensionWriter := net.Pipe()
 	defer hostToExtensionReader.Close()
 	defer hostToExtensionWriter.Close()
@@ -79,6 +88,7 @@ func TestRelayRemapsRequestIDs(t *testing.T) {
 }
 
 func TestRelayBroadcastsExtensionNotificationsToSDKClients(t *testing.T) {
+	skipUnixOnWindows(t)
 	hostToExtensionReader, hostToExtensionWriter := net.Pipe()
 	defer hostToExtensionReader.Close()
 	defer hostToExtensionWriter.Close()
@@ -176,6 +186,9 @@ func TestDefaultSocketPathUsesUUIDFilename(t *testing.T) {
 	socketDir := t.TempDir()
 	relay := NewRelay(Config{SocketDir: socketDir}, nil, nil)
 	socketPath := relay.SocketPath()
+	if socketPath == "tcp://open-browser-use" {
+		return // Windows uses fixed TCP identifier, not UUID path
+	}
 	if filepath.Dir(socketPath) != socketDir {
 		t.Fatalf("expected socket path under %q, got %q", socketDir, socketPath)
 	}
@@ -223,7 +236,7 @@ func waitForClients(t *testing.T, relay *Relay, count int) {
 
 func shortSocketDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "obu-")
+	dir, err := os.MkdirTemp("", "obu-")
 	if err != nil {
 		t.Fatal(err)
 	}

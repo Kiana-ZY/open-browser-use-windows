@@ -2,10 +2,12 @@ package obu
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -247,15 +249,32 @@ func TestDownloadAndClipboardWrappers(t *testing.T) {
 
 func startSDKServer(t *testing.T, handler func(net.Conn)) (string, func()) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "obu-go-sdk-")
-	if err != nil {
-		t.Fatal(err)
+	var socketPath string
+	var listener net.Listener
+	var cleanup func()
+
+	var err error
+	if runtime.GOOS == "windows" {
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		socketPath = fmt.Sprintf("127.0.0.1:%d", listener.Addr().(*net.TCPAddr).Port)
+		cleanup = func() {}
+	} else {
+		var dir string
+		dir, err = os.MkdirTemp("", "obu-go-sdk-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		socketPath = filepath.Join(dir, "obu.sock")
+		listener, err = net.Listen("unix", socketPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanup = func() { os.RemoveAll(dir) }
 	}
-	socketPath := filepath.Join(dir, "obu.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -269,7 +288,7 @@ func startSDKServer(t *testing.T, handler func(net.Conn)) (string, func()) {
 	return socketPath, func() {
 		_ = listener.Close()
 		<-done
-		_ = os.RemoveAll(dir)
+		cleanup()
 	}
 }
 
