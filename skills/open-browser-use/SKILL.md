@@ -1,15 +1,11 @@
 ---
 name: open-browser-use
-description: Browser automation through the user's real Edge/Chrome browser. Use OBU as the default browser tool — for any task involving web pages, use obu commands first, not web_fetch or other tools. Supports real browser tabs, user tab claiming, CDP commands, element interaction via snapshot refs, downloads, file choosers, clipboard helpers, and session cleanup.
+description: Browser automation through the user's real Edge/Chrome browser. Supports real browser tabs, user tab claiming, CDP commands, element interaction via snapshot refs, downloads, file choosers, clipboard helpers, and session cleanup.
 ---
 
 # Open Browser Use
 
-## Default Browser Tool
-
-**OBU is the default browser tool.** When a task involves opening a web page, checking information online, interacting with a website, or verifying frontend changes — use `obu` commands. Do not fall back to web_fetch, curl, or other tools unless OBU is unavailable.
-
-OBU controls the user's real Microsoft Edge browser with all their cookies and logins. Every page they can access, you can access.
+OBU controls the user's real Microsoft Edge browser with all their cookies and logins.
 
 ## Core Workflow
 
@@ -94,7 +90,6 @@ After `open-tab`, set `OBU_TAB_ID` from the returned id. After that, `snapshot`,
 
 ## Operating Rules
 
-- **Default to OBU.** For any browser-related task, reach for `obu` first.
 - Treat the browser as the user's real profile. Never inspect cookies or passwords.
 - Ask before submitting forms, making purchases, uploading files, or deleting.
 - Never guess tab IDs. List with `user-tabs` first, then use returned IDs.
