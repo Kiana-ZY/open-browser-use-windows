@@ -26,7 +26,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.29"
+const version = "0.1.30"
 const defaultChromeExtensionID = "bgjoihaepiejlfjinojjfgokghnodnhd"
 const defaultCLISessionID = "obu-cli"
 const defaultMCPSessionID = "obu-mcp"
@@ -34,6 +34,8 @@ const chromeWebStoreUpdateURL = "https://clients2.google.com/service/update2/crx
 const betaExtensionPublicKey = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnBLT95WWVnHYH0pOBRH/eP+BWtlKVmLE/RHkERUTI2+PGDSQrbWVabmTw4CZ3yhjko04dijSX2Az8cnp65xh23Dh5mP5TCtiP9LexRFJokd8EsyeFdtKamMYr0hF1ZUc1/8ZpLnetAU65ZMB9VzHQBqpJWeUwuIvecgfRtGklDgJMjnvcq5J6pttZrzWrI/2B0BNufwsTQfEt7qLtDFPHXmUdtZfQbc2EfYFvkXLDAXicYviiocedrsAGIKUxpyQegobhUFL+tNLOuXKBpZlLFQn3xgm5CyGZwN6bueiV/S7reigVTKAMQ8BX0eacT22e8r0UzjsjkugeHOIonIvtQIDAQAB"
 const browserChrome = "chrome"
 const browserEdge = "edge"
+const browserAll = "all"
+const screenshotAttempts = 2
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -74,6 +76,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newHostCommand(),
 		newSetupCommand(),
+		newDoctorCommand(),
 		newManifestCommand(),
 		newInstallManifestCommand(),
 		newCallCommand(),
@@ -104,6 +107,40 @@ func newRootCommand() *cobra.Command {
 		newVersionCommand(),
 	)
 	return root
+}
+
+func newDoctorCommand() *cobra.Command {
+	options := socketOptions{timeout: 2 * time.Second}
+	var browser string
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose Open Browser Use browser integration",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			browser = strings.ToLower(strings.TrimSpace(browser))
+			if browser == "" {
+				browser = browserChrome
+			}
+			if browser != browserChrome && browser != browserEdge && browser != browserAll {
+				return fmt.Errorf("doctor --browser must be %q, %q, or %q", browserChrome, browserEdge, browserAll)
+			}
+			if browser == browserAll {
+				report := buildDoctorSuiteReport(options, []string{browserChrome, browserEdge})
+				if options.jsonOutput {
+					return writeJSONTo(cmd.OutOrStdout(), report)
+				}
+				return renderDoctorSuiteReport(cmd.OutOrStdout(), report)
+			}
+			report := buildDoctorReport(options, browser)
+			if options.jsonOutput {
+				return writeJSONTo(cmd.OutOrStdout(), report)
+			}
+			return renderDoctorReport(cmd.OutOrStdout(), report)
+		},
+	}
+	addSocketFlags(cmd, &options)
+	cmd.Flags().StringVar(&browser, "browser", browserChrome, "browser to inspect (chrome, edge, or all)")
+	return cmd
 }
 
 func newHostCommand() *cobra.Command {
@@ -723,12 +760,538 @@ func addSocketFlags(cmd *cobra.Command, options *socketOptions) {
 			options.sessionID = defaultCLISessionID
 		}
 	}
+	if options.timeout == 0 {
+		options.timeout = 10 * time.Second
+	}
 	cmd.Flags().StringVar(&options.socketPath, "socket", "", "Unix socket or TCP relay path")
 	cmd.Flags().StringVar(&options.socketDir, "socket-dir", host.DefaultSocketDir(), "directory containing active relay registry")
-	cmd.Flags().DurationVar(&options.timeout, "timeout", 10*time.Second, "request timeout")
+	cmd.Flags().DurationVar(&options.timeout, "timeout", options.timeout, "request timeout")
 	cmd.Flags().StringVar(&options.sessionID, "session-id", options.sessionID, "browser session id (env: OBU_SESSION_ID)")
 	cmd.Flags().BoolVar(&options.jsonOutput, "json", false, "output raw result value only, no JSON-RPC wrapper")
 	cmd.Flags().StringVar(&options.traceLog, "trace-log", "", "write browser action trace JSONL to this file")
+}
+
+type doctorReport struct {
+	OK               bool                   `json:"ok"`
+	Version          string                 `json:"version"`
+	OS               string                 `json:"os"`
+	Arch             string                 `json:"arch"`
+	Browser          string                 `json:"browser"`
+	SessionID        string                 `json:"sessionId"`
+	Socket           doctorSocketReport     `json:"socket"`
+	NativeHost       doctorNativeHostReport `json:"nativeHost"`
+	BrowserExtension doctorExtensionReport  `json:"browserExtension"`
+	Checks           []doctorCheck          `json:"checks"`
+	NextSteps        []string               `json:"nextSteps,omitempty"`
+}
+
+type doctorSuiteReport struct {
+	OK        bool           `json:"ok"`
+	Version   string         `json:"version"`
+	OS        string         `json:"os"`
+	Arch      string         `json:"arch"`
+	SessionID string         `json:"sessionId"`
+	Browsers  []doctorReport `json:"browsers"`
+	NextSteps []string       `json:"nextSteps,omitempty"`
+}
+
+type doctorSocketReport struct {
+	Endpoint         string `json:"endpoint"`
+	SocketDir        string `json:"socketDir,omitempty"`
+	ActiveRecordPath string `json:"activeRecordPath,omitempty"`
+	ActiveSocketPath string `json:"activeSocketPath,omitempty"`
+	ActivePID        int    `json:"activePid,omitempty"`
+	ActiveStartedAt  string `json:"activeStartedAt,omitempty"`
+	Reachable        bool   `json:"reachable"`
+	PingStatus       string `json:"pingStatus,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
+type doctorNativeHostReport struct {
+	Name                   string                `json:"name"`
+	StableHostPath         string                `json:"stableHostPath,omitempty"`
+	StableHostExists       bool                  `json:"stableHostExists"`
+	ManifestPath           string                `json:"manifestPath,omitempty"`
+	ManifestExists         bool                  `json:"manifestExists"`
+	ManifestPathInFile     string                `json:"manifestPathInFile,omitempty"`
+	ManifestAllowedOrigins []string              `json:"manifestAllowedOrigins,omitempty"`
+	ManifestOK             bool                  `json:"manifestOk"`
+	Registry               *doctorRegistryReport `json:"registry,omitempty"`
+	Error                  string                `json:"error,omitempty"`
+}
+
+type doctorRegistryReport struct {
+	Path  string `json:"path"`
+	OK    bool   `json:"ok"`
+	Value string `json:"value,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+type doctorExtensionReport struct {
+	Installed       bool   `json:"installed"`
+	Reachable       bool   `json:"reachable"`
+	ExtensionID     string `json:"extensionId,omitempty"`
+	Version         string `json:"version,omitempty"`
+	VersionSource   string `json:"versionSource,omitempty"`
+	ExpectedVersion string `json:"expectedVersion"`
+	Summary         string `json:"summary"`
+	Error           string `json:"error,omitempty"`
+}
+
+type doctorCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+func buildDoctorSuiteReport(options socketOptions, browsers []string) doctorSuiteReport {
+	sessionID := resolvedSessionID(options.sessionID)
+	report := doctorSuiteReport{
+		OK:        true,
+		Version:   version,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		SessionID: sessionID,
+		Browsers:  make([]doctorReport, 0, len(browsers)),
+	}
+	var nextSteps []string
+	for _, browser := range browsers {
+		browserReport := buildDoctorReport(options, browser)
+		report.Browsers = append(report.Browsers, browserReport)
+		if !browserReport.OK {
+			report.OK = false
+		}
+		nextSteps = append(nextSteps, browserReport.NextSteps...)
+	}
+	report.NextSteps = uniqueStrings(nextSteps)
+	if len(report.Browsers) == 0 {
+		report.OK = false
+	}
+	return report
+}
+
+func buildDoctorReport(options socketOptions, browser string) doctorReport {
+	if options.timeout == 0 {
+		options.timeout = 2 * time.Second
+	}
+	if options.socketDir == "" {
+		options.socketDir = host.DefaultSocketDir()
+	}
+	sessionID := resolvedSessionID(options.sessionID)
+	report := doctorReport{
+		Version:   version,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		Browser:   browser,
+		SessionID: sessionID,
+		Socket:    inspectDoctorSocket(options),
+		NativeHost: doctorNativeHostReport{
+			Name: host.NativeHostName,
+		},
+		BrowserExtension: doctorExtensionReport{
+			ExpectedVersion: version,
+		},
+	}
+
+	inspectNativeHost(browser, &report)
+	inspectBrowserRelay(options, &report)
+	inspectBrowserExtension(browser, &report)
+	report.NextSteps = doctorNextSteps(report)
+	report.OK = doctorReportOK(report.Checks)
+	return report
+}
+
+func inspectDoctorSocket(options socketOptions) doctorSocketReport {
+	socket := doctorSocketReport{
+		SocketDir: options.socketDir,
+	}
+	if options.socketPath != "" {
+		socket.Endpoint = options.socketPath
+		return socket
+	}
+	if runtime.GOOS == "windows" {
+		socket.Endpoint = fmt.Sprintf("127.0.0.1:%d", host.TCPPort)
+		return socket
+	}
+	socket.ActiveRecordPath = host.ActiveSocketRecordPath(options.socketDir)
+	record, err := host.ReadActiveSocketRecord(options.socketDir)
+	if err != nil {
+		socket.Error = err.Error()
+		return socket
+	}
+	socket.ActiveSocketPath = record.SocketPath
+	socket.ActivePID = record.PID
+	socket.ActiveStartedAt = record.StartedAt.Format(time.RFC3339)
+	socket.Endpoint = record.SocketPath
+	return socket
+}
+
+func inspectNativeHost(browser string, report *doctorReport) {
+	stablePath, err := stableNativeHostPath()
+	if err != nil {
+		report.NativeHost.Error = err.Error()
+		addDoctorCheck(report, "stable-host", "error", "Cannot resolve stable native host path.", err.Error())
+		return
+	}
+	report.NativeHost.StableHostPath = stablePath
+	if info, err := os.Stat(stablePath); err == nil && !info.IsDir() {
+		report.NativeHost.StableHostExists = true
+		addDoctorCheck(report, "stable-host", "ok", "Stable native host binary exists.", stablePath)
+	} else if err == nil && info.IsDir() {
+		addDoctorCheck(report, "stable-host", "error", "Stable native host path is a directory.", stablePath)
+	} else {
+		addDoctorCheck(report, "stable-host", "error", "Stable native host binary is missing.", stablePath)
+	}
+
+	manifestPath, err := defaultNativeHostManifestPath(browser)
+	if err != nil {
+		report.NativeHost.Error = err.Error()
+		addDoctorCheck(report, "native-manifest", "error", "Cannot resolve browser native messaging manifest path.", err.Error())
+		return
+	}
+	report.NativeHost.ManifestPath = manifestPath
+	payload, err := os.ReadFile(manifestPath)
+	if err != nil {
+		report.NativeHost.Error = err.Error()
+		addDoctorCheck(report, "native-manifest", "error", "Native messaging manifest is missing or unreadable.", manifestPath)
+	} else {
+		report.NativeHost.ManifestExists = true
+		manifestOK, detail := inspectNativeManifestPayload(payload, stablePath, report)
+		report.NativeHost.ManifestOK = manifestOK
+		if manifestOK {
+			addDoctorCheck(report, "native-manifest", "ok", "Native messaging manifest points at Open Browser Use.", manifestPath)
+		} else {
+			addDoctorCheck(report, "native-manifest", "error", "Native messaging manifest does not match the expected Open Browser Use host.", detail)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		registry := inspectWindowsNativeHostRegistry(browser)
+		report.NativeHost.Registry = &registry
+		if registry.OK {
+			addDoctorCheck(report, "native-registry", "ok", "Windows native messaging registry key is present.", registry.Path)
+		} else {
+			addDoctorCheck(report, "native-registry", "error", "Windows native messaging registry key is missing or unreadable.", registry.Error)
+		}
+	}
+}
+
+func inspectNativeManifestPayload(payload []byte, stablePath string, report *doctorReport) (bool, string) {
+	var manifest map[string]any
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		return false, err.Error()
+	}
+	name, _ := manifest["name"].(string)
+	manifestPath, _ := manifest["path"].(string)
+	report.NativeHost.ManifestPathInFile = manifestPath
+	report.NativeHost.ManifestAllowedOrigins = stringSliceFromAny(manifest["allowed_origins"])
+	var problems []string
+	if name != host.NativeHostName {
+		problems = append(problems, fmt.Sprintf("name=%q", name))
+	}
+	if manifestPath == "" {
+		problems = append(problems, "path is empty")
+	} else if sameFilePath(manifestPath, stablePath) {
+		report.NativeHost.ManifestPathInFile = manifestPath
+	} else {
+		problems = append(problems, fmt.Sprintf("path=%q, expected %q", manifestPath, stablePath))
+	}
+	if len(report.NativeHost.ManifestAllowedOrigins) == 0 {
+		problems = append(problems, "allowed_origins is empty")
+	}
+	if !originsContainChromeExtension(report.NativeHost.ManifestAllowedOrigins) {
+		problems = append(problems, "allowed_origins does not include an Open Browser Use extension id")
+	}
+	if len(problems) > 0 {
+		return false, strings.Join(problems, "; ")
+	}
+	return true, ""
+}
+
+func inspectWindowsNativeHostRegistry(browser string) doctorRegistryReport {
+	registryPath := `HKCU\Software\Google\Chrome\NativeMessagingHosts\` + host.NativeHostName
+	if browser == browserEdge {
+		registryPath = `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\` + host.NativeHostName
+	}
+	report := doctorRegistryReport{Path: registryPath}
+	output, err := exec.Command("reg", "query", registryPath, "/ve").CombinedOutput()
+	if err != nil {
+		report.Error = strings.TrimSpace(string(output))
+		if report.Error == "" {
+			report.Error = err.Error()
+		}
+		return report
+	}
+	report.OK = true
+	report.Value = strings.TrimSpace(string(output))
+	return report
+}
+
+func inspectBrowserRelay(options socketOptions, report *doctorReport) {
+	pingResponse, pingErr := invokeWithOptions(options, "ping", map[string]any{})
+	if pingErr != nil {
+		report.Socket.Error = pingErr.Error()
+		addDoctorCheck(report, "relay-ping", "error", "Cannot reach the Open Browser Use relay.", pingErr.Error())
+		return
+	}
+	if responseErr := jsonRPCErrorString(pingResponse); responseErr != "" {
+		report.Socket.Error = responseErr
+		addDoctorCheck(report, "relay-ping", "error", "Relay returned an error for ping.", responseErr)
+		return
+	}
+	report.Socket.Reachable = true
+	if status, ok := pingResponse["result"].(string); ok {
+		report.Socket.PingStatus = status
+	}
+	addDoctorCheck(report, "relay-ping", "ok", "Relay responded to ping.", report.Socket.PingStatus)
+
+	infoResponse, infoErr := invokeWithOptions(options, "getInfo", map[string]any{})
+	if infoErr != nil {
+		addDoctorCheck(report, "browser-info", "error", "Cannot read browser extension info.", infoErr.Error())
+		return
+	}
+	if responseErr := jsonRPCErrorString(infoResponse); responseErr != "" {
+		addDoctorCheck(report, "browser-info", "error", "Browser extension info returned an error.", responseErr)
+		return
+	}
+	if result, ok := infoResponse["result"].(map[string]any); ok {
+		mergeDoctorExtensionInfo(result, report)
+		addDoctorCheck(report, "browser-info", "ok", "Browser extension reported runtime info.", "")
+		return
+	}
+	addDoctorCheck(report, "browser-info", "warn", "Browser extension info response did not include an object result.", "")
+}
+
+func inspectBrowserExtension(browser string, report *doctorReport) {
+	if report.BrowserExtension.Reachable {
+		if report.BrowserExtension.Summary == "" {
+			report.BrowserExtension.Summary = "Connected extension reported runtime info."
+		}
+		if report.BrowserExtension.Version != "" && compareChromeVersions(report.BrowserExtension.Version, version) < 0 {
+			addDoctorCheck(report, "extension-version", "warn", "Browser extension is older than the CLI.", fmt.Sprintf("extension=%s cli=%s", report.BrowserExtension.Version, version))
+		} else {
+			addDoctorCheck(report, "extension-version", "ok", "Browser extension version is compatible.", report.BrowserExtension.Version)
+		}
+		return
+	}
+
+	status := detectBrowserExtension(browser, host.DefaultSocketDir(), 700*time.Millisecond)
+	report.BrowserExtension.Installed = status.Installed
+	report.BrowserExtension.ExtensionID = status.ExtensionID
+	report.BrowserExtension.Version = status.Version
+	report.BrowserExtension.VersionSource = status.VersionSource
+	report.BrowserExtension.Summary = status.summary()
+	report.BrowserExtension.Error = status.Error
+	if !status.Installed {
+		addDoctorCheck(report, "extension-install", "error", "Browser extension is not installed in the selected browser profile.", status.Error)
+		return
+	}
+	if status.needsUpgrade() {
+		addDoctorCheck(report, "extension-version", "warn", "Browser extension is installed but older than the CLI.", fmt.Sprintf("extension=%s cli=%s", status.Version, status.ExpectedVersion))
+		return
+	}
+	addDoctorCheck(report, "extension-install", "warn", "Browser extension is installed but not connected yet.", status.VersionSource)
+}
+
+func mergeDoctorExtensionInfo(result map[string]any, report *doctorReport) {
+	report.BrowserExtension.Installed = true
+	report.BrowserExtension.Reachable = true
+	report.BrowserExtension.VersionSource = "connected extension"
+	if extensionVersion, ok := result["version"].(string); ok {
+		report.BrowserExtension.Version = extensionVersion
+	}
+	if metadata, ok := result["metadata"].(map[string]any); ok {
+		if extensionID, ok := metadata["extensionId"].(string); ok {
+			report.BrowserExtension.ExtensionID = extensionID
+		}
+	}
+	report.BrowserExtension.Summary = "Installed and connected."
+}
+
+func renderDoctorReport(writer io.Writer, report doctorReport) error {
+	fmt.Fprintln(writer, "Open Browser Use doctor")
+	fmt.Fprintf(writer, "Version: %s\n", report.Version)
+	fmt.Fprintf(writer, "Platform: %s/%s\n", report.OS, report.Arch)
+	fmt.Fprintf(writer, "Browser: %s\n", report.Browser)
+	fmt.Fprintf(writer, "Session: %s\n", report.SessionID)
+	fmt.Fprintln(writer)
+	for _, check := range report.Checks {
+		fmt.Fprintf(writer, "[%s] %s: %s\n", strings.ToUpper(check.Status), check.Name, check.Message)
+		if check.Detail != "" {
+			fmt.Fprintf(writer, "      %s\n", check.Detail)
+		}
+	}
+	if len(report.NextSteps) > 0 {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Next steps:")
+		for index, step := range report.NextSteps {
+			fmt.Fprintf(writer, "  %d. %s\n", index+1, step)
+		}
+	}
+	if report.OK {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Status: ready")
+	} else {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Status: needs attention")
+	}
+	return nil
+}
+
+func renderDoctorSuiteReport(writer io.Writer, report doctorSuiteReport) error {
+	fmt.Fprintln(writer, "Open Browser Use doctor")
+	fmt.Fprintf(writer, "Version: %s\n", report.Version)
+	fmt.Fprintf(writer, "Platform: %s/%s\n", report.OS, report.Arch)
+	fmt.Fprintf(writer, "Session: %s\n", report.SessionID)
+	fmt.Fprintln(writer)
+	for index, browserReport := range report.Browsers {
+		if index > 0 {
+			fmt.Fprintln(writer)
+		}
+		fmt.Fprintf(writer, "Browser: %s\n", browserReport.Browser)
+		for _, check := range browserReport.Checks {
+			fmt.Fprintf(writer, "[%s] %s: %s\n", strings.ToUpper(check.Status), check.Name, check.Message)
+			if check.Detail != "" {
+				fmt.Fprintf(writer, "      %s\n", check.Detail)
+			}
+		}
+		if browserReport.OK {
+			fmt.Fprintln(writer, "Status: ready")
+		} else {
+			fmt.Fprintln(writer, "Status: needs attention")
+		}
+	}
+	if len(report.NextSteps) > 0 {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Next steps:")
+		for index, step := range report.NextSteps {
+			fmt.Fprintf(writer, "  %d. %s\n", index+1, step)
+		}
+	}
+	if report.OK {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Overall status: ready")
+	} else {
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, "Overall status: needs attention")
+	}
+	return nil
+}
+
+func doctorNextSteps(report doctorReport) []string {
+	var steps []string
+	if !report.NativeHost.StableHostExists || !report.NativeHost.ManifestOK {
+		steps = append(steps, fmt.Sprintf("Run `open-browser-use setup --browser %s` or `open-browser-use setup beta --browser %s`.", report.Browser, report.Browser))
+	}
+	if !report.BrowserExtension.Installed {
+		steps = append(steps, fmt.Sprintf("Install or enable the Open Browser Use extension in %s.", report.Browser))
+	}
+	if report.BrowserExtension.Version != "" && compareChromeVersions(report.BrowserExtension.Version, version) < 0 {
+		steps = append(steps, fmt.Sprintf("Upgrade the browser extension with `open-browser-use setup beta --browser %s`.", report.Browser))
+	}
+	if !report.Socket.Reachable {
+		steps = append(steps, "Open the browser, make sure the extension is enabled, then run `open-browser-use ping`.")
+	}
+	return uniqueStrings(steps)
+}
+
+func addDoctorCheck(report *doctorReport, name string, status string, message string, detail string) {
+	report.Checks = append(report.Checks, doctorCheck{
+		Name:    name,
+		Status:  status,
+		Message: message,
+		Detail:  detail,
+	})
+}
+
+func doctorReportOK(checks []doctorCheck) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, check := range checks {
+		if check.Status != "ok" {
+			return false
+		}
+	}
+	return true
+}
+
+func resolvedSessionID(sessionID string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	if env := os.Getenv("OBU_SESSION_ID"); env != "" {
+		return env
+	}
+	return defaultCLISessionID
+}
+
+func jsonRPCErrorString(response map[string]any) string {
+	raw, ok := response["error"]
+	if !ok || raw == nil {
+		return ""
+	}
+	if errorObject, ok := raw.(map[string]any); ok {
+		if message, ok := errorObject["message"].(string); ok {
+			return message
+		}
+	}
+	return fmt.Sprint(raw)
+}
+
+func stringSliceFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func originsContainChromeExtension(origins []string) bool {
+	for _, origin := range origins {
+		if strings.HasPrefix(origin, "chrome-extension://") && strings.HasSuffix(origin, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+func sameFilePath(left string, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr == nil {
+		left = leftAbs
+	}
+	if rightErr == nil {
+		right = rightAbs
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func newCallCommand() *cobra.Command {
@@ -760,6 +1323,7 @@ func newRunCommand() *cobra.Command {
 	var options socketOptions
 	var command string
 	var file string
+	var continueOnError bool
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run a line-oriented browser action plan",
@@ -794,16 +1358,21 @@ Example:
 				return errors.New("run requires --command or --file")
 			}
 			runner := newActionRunner(options)
+			runner.continueOnError = continueOnError
 			output, err := runner.run(script)
+			if writeErr := writeJSONTo(cmd.OutOrStdout(), output); writeErr != nil {
+				return writeErr
+			}
 			if err != nil {
 				return err
 			}
-			return writeJSONTo(cmd.OutOrStdout(), output)
+			return nil
 		},
 	}
 	addSocketFlags(cmd, &options)
 	cmd.Flags().StringVarP(&command, "command", "c", "", "line-oriented action plan")
 	cmd.Flags().StringVar(&file, "file", "", "file containing a line-oriented action plan")
+	cmd.Flags().BoolVar(&continueOnError, "continue-on-error", false, "continue running later action lines after a failure")
 	return cmd
 }
 
@@ -1198,18 +1767,34 @@ func captureScreenshot(options socketOptions, tabID int, output string, selector
 		clip = resolvedClip
 		params["clip"] = clip
 	}
-	response, err := invokeWithOptions(options, "executeCdp", map[string]any{
-		"target":        map[string]any{"tabId": tabID},
-		"method":        "Page.captureScreenshot",
-		"commandParams": params,
-	})
-	if err != nil {
-		return nil, err
+	var data string
+	var captureErr error
+	attempts := screenshotAttempts
+	for attempt := 1; attempt <= attempts; attempt++ {
+		response, err := invokeWithOptions(options, "executeCdp", map[string]any{
+			"target":        map[string]any{"tabId": tabID},
+			"method":        "Page.captureScreenshot",
+			"commandParams": params,
+		})
+		if err != nil {
+			captureErr = err
+		} else {
+			result, _ := response["result"].(map[string]any)
+			data, _ = result["data"].(string)
+			if data != "" {
+				break
+			}
+			captureErr = fmt.Errorf("screenshot returned no data for tab %d on attempt %d/%d", tabID, attempt, attempts)
+		}
+		if attempt < attempts {
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
-	result, _ := response["result"].(map[string]any)
-	data, _ := result["data"].(string)
 	if data == "" {
-		return nil, errors.New("screenshot returned no data")
+		if captureErr != nil {
+			return nil, captureErr
+		}
+		return nil, fmt.Errorf("screenshot returned no data for tab %d", tabID)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
@@ -1737,23 +2322,44 @@ func newVersionCommand() *cobra.Command {
 }
 
 type actionRunner struct {
-	options      socketOptions
-	sessionID    string
-	turnID       string
-	currentTabID int
+	options         socketOptions
+	sessionID       string
+	turnID          string
+	currentTabID    int
+	continueOnError bool
 }
 
 type actionRunOutput struct {
 	Steps        []actionStepOutput `json:"steps"`
 	CurrentTabID int                `json:"currentTabId,omitempty"`
+	OK           bool               `json:"ok"`
+	Error        string             `json:"error,omitempty"`
 }
 
 type actionStepOutput struct {
 	Line     int            `json:"line"`
 	Action   string         `json:"action"`
 	Risk     string         `json:"risk"`
+	OK       bool           `json:"ok"`
 	TabID    int            `json:"tabId,omitempty"`
 	Response map[string]any `json:"response"`
+	Error    string         `json:"error,omitempty"`
+}
+
+type actionRunError struct {
+	Output actionRunOutput
+	Err    error
+}
+
+func (err actionRunError) Error() string {
+	if err.Err == nil {
+		return ""
+	}
+	return err.Err.Error()
+}
+
+func (err actionRunError) Unwrap() error {
+	return err.Err
 }
 
 func newActionRunner(options socketOptions) *actionRunner {
@@ -1773,15 +2379,26 @@ func (runner *actionRunner) run(script string) (actionRunOutput, error) {
 	if err != nil {
 		return actionRunOutput{}, err
 	}
-	output := actionRunOutput{Steps: []actionStepOutput{}}
+	output := actionRunOutput{Steps: []actionStepOutput{}, OK: true}
 	for _, line := range lines {
 		step, err := runner.runActionLine(line)
 		if err != nil {
-			return actionRunOutput{}, fmt.Errorf("line %d: %w", line.number, err)
+			output.OK = false
+			output.Error = fmt.Sprintf("line %d: %s", line.number, err.Error())
 		}
 		output.Steps = append(output.Steps, step)
+		if err != nil {
+			output.CurrentTabID = runner.currentTabID
+			if runner.continueOnError {
+				continue
+			}
+			return output, actionRunError{Output: output, Err: fmt.Errorf("line %d: %w", line.number, err)}
+		}
 	}
 	output.CurrentTabID = runner.currentTabID
+	if !output.OK {
+		return output, actionRunError{Output: output, Err: errors.New(output.Error)}
+	}
 	return output, nil
 }
 
@@ -1792,12 +2409,20 @@ func (runner *actionRunner) runActionLine(line actionLine) (actionStepOutput, er
 	response, tabID, err := runner.runAction(action, args)
 	if err != nil {
 		_ = runner.writeTrace(line.number, action, actionRisk(action), tabID, startedAt, err)
-		return actionStepOutput{}, err
+		return actionStepOutput{
+			Line:   line.number,
+			Action: action,
+			Risk:   actionRisk(action),
+			OK:     false,
+			TabID:  tabID,
+			Error:  err.Error(),
+		}, err
 	}
 	step := actionStepOutput{
 		Line:     line.number,
 		Action:   action,
 		Risk:     actionRisk(action),
+		OK:       true,
 		TabID:    tabID,
 		Response: response,
 	}
@@ -1808,20 +2433,20 @@ func (runner *actionRunner) runActionLine(line actionLine) (actionStepOutput, er
 func (runner *actionRunner) runAction(action string, args []string) (map[string]any, int, error) {
 	switch action {
 	case "ping":
-		return runner.invoke("ping", map[string]any{})
+		return runner.invokeStructured("ping", map[string]any{})
 	case "info":
-		return runner.invoke("getInfo", map[string]any{})
+		return runner.invokeStructured("getInfo", map[string]any{})
 	case "tabs":
-		return runner.invoke("getTabs", map[string]any{})
+		return runner.invokeStructured("getTabs", map[string]any{})
 	case "user-tabs":
-		return runner.invoke("getUserTabs", map[string]any{})
+		return runner.invokeStructured("getUserTabs", map[string]any{})
 	case "turn-ended":
-		return runner.invoke("turnEnded", map[string]any{})
+		return runner.invokeStructured("turnEnded", map[string]any{})
 	case "name-session":
 		if len(args) == 0 {
 			return nil, 0, errors.New("name-session requires a name")
 		}
-		return runner.invoke("nameSession", map[string]any{"name": strings.Join(args, " ")})
+		return runner.invokeStructured("nameSession", map[string]any{"name": strings.Join(args, " ")})
 	case "open-tab":
 		return runner.runOpenTabAction(args)
 	case "claim-tab":
@@ -1829,7 +2454,7 @@ func (runner *actionRunner) runAction(action string, args []string) (map[string]
 		if err != nil {
 			return nil, 0, fmt.Errorf("claim-tab requires tab id: %w", err)
 		}
-		response, _, err := runner.invoke("claimUserTab", map[string]any{"tabId": tabID})
+		response, _, err := runner.invokeStructured("claimUserTab", map[string]any{"tabId": tabID})
 		if err == nil {
 			runner.currentTabID = tabID
 		}
@@ -1877,7 +2502,7 @@ func actionRisk(action string) string {
 		return "navigation"
 	case "set-file-chooser-files":
 		return "file-system"
-	case "wait-file-chooser", "screenshot", "snapshot", "text", "page-info", "history", "tabs", "user-tabs", "info", "ping", "wait-load":
+	case "doctor", "wait-file-chooser", "screenshot", "snapshot", "text", "page-info", "history", "tabs", "user-tabs", "info", "ping", "wait-load":
 		return "read"
 	case "finalize-tabs", "turn-ended", "name-session":
 		return "session"
@@ -1961,11 +2586,15 @@ func (runner *actionRunner) runNavigateAction(args []string) (map[string]any, in
 	if err := runner.attach(tabID); err != nil {
 		return nil, 0, err
 	}
-	return runner.invoke("executeCdp", map[string]any{
+	response, _, err := runner.invoke("executeCdp", map[string]any{
 		"target":        map[string]any{"tabId": tabID},
 		"method":        "Page.navigate",
 		"commandParams": map[string]any{"url": url},
 	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return map[string]any{"result": map[string]any{"navigate": response["result"]}}, tabID, nil
 }
 
 func (runner *actionRunner) runWaitLoadAction(args []string) (map[string]any, int, error) {
@@ -2032,7 +2661,14 @@ func (runner *actionRunner) runPageInfoAction(args []string) (map[string]any, in
 			"returnByValue": true,
 		},
 	})
-	return response, tabID, err
+	if err != nil {
+		return nil, 0, err
+	}
+	result, err := runtimeEvaluateMap(response)
+	if err != nil {
+		return nil, 0, err
+	}
+	return map[string]any{"result": result}, tabID, nil
 }
 
 func (runner *actionRunner) runTextAction(args []string) (map[string]any, int, error) {
@@ -2210,7 +2846,7 @@ func (runner *actionRunner) runHistoryAction(args []string) (map[string]any, int
 	if to := stringFlag(args, "--to"); to != "" {
 		params["to"] = to
 	}
-	return runner.invoke("getUserHistory", params)
+	return runner.invokeStructured("getUserHistory", params)
 }
 
 func (runner *actionRunner) runMoveMouseAction(args []string) (map[string]any, int, error) {
@@ -2275,7 +2911,7 @@ func (runner *actionRunner) runFinalizeTabsAction(args []string) (map[string]any
 	if err := json.Unmarshal([]byte(keepJSON), &keep); err != nil {
 		return nil, 0, fmt.Errorf("finalize-tabs keep must be a JSON array: %w", err)
 	}
-	return runner.invoke("finalizeTabs", map[string]any{"keep": keep})
+	return runner.invokeStructured("finalizeTabs", map[string]any{"keep": keep})
 }
 
 func (runner *actionRunner) runCallAction(args []string) (map[string]any, int, error) {
@@ -2307,6 +2943,15 @@ func (runner *actionRunner) invoke(method string, params map[string]any) (map[st
 	params["turn_id"] = runner.turnID
 	response, err := invoke(runner.options.socketPath, runner.options.socketDir, method, params, runner.options.timeout)
 	return response, runner.currentTabID, err
+}
+
+func (runner *actionRunner) invokeStructured(method string, params map[string]any) (map[string]any, int, error) {
+	response, tabID, err := runner.invoke(method, params)
+	if err != nil {
+		return nil, tabID, err
+	}
+	result, _ := response["result"]
+	return map[string]any{"result": normalizeJSONResult(method, result)}, tabID, nil
 }
 
 type actionLine struct {

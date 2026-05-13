@@ -4,6 +4,7 @@
 
 | 日期 | 功能域 | 用户价值 | 变更摘要 |
 | --- | --- | --- | --- |
+| 2026-05-13 | Browser Diagnostics | Agent runtime 和用户可以用一次 preflight 同时定位 Chrome / Edge 的 native host、manifest、registry、relay 和扩展状态，MCP-first 集成也能直接读取结构化诊断结果。 | 新增 `doctor --browser all --json` 聚合报告和 MCP `doctor` 工具，更新 skill、Codex/Claude MCP 文档、troubleshooting、README、可靠性文档和 CloakBrowser 对标说明，明确借鉴其诊断/发布/工作流产品化方式但不引入 stealth 或风控规避能力。 |
 | 2026-05-11 | Open Browser Use for Windows | Windows 用户和 agent runtime 可以从清晰命名的本地仓库使用 OBU，同时核心运行目录更干净，历史/研究材料不再混在主路径里。 | 发布 `0.1.29` patch 版本，将项目名同步为 Open Browser Use for Windows，保留 `obu` 简称，更新 GitHub 仓库路径和包版本，并把旧流程文档、研究资料、doc site、本地 agent 快照归档到 `archive/` 分类目录。 |
 | 2026-05-10 | Go SDK | Go 用户可以直接通过 Go module 接入 Open Browser Use，不必绕 JS/Python SDK 或 shell CLI。 | 发布 `0.1.28` patch 版本，新增 `packages/open-browser-use-go`，覆盖 active socket discovery、Browser Use JSON-RPC wrappers、CDP helpers、browser/tab/playwright-like helper、download/clipboard wrappers 和 fake socket 协议测试；同步 Go module path 到真实 GitHub 仓库路径，保证 `go get` 可拉取。 |
 | 2026-05-10 | Deliverable Group Emoji | Chrome tab group 中的 Open Browser Use 交付组不再因为使用过新的 emoji 而显示成 `[?]`，保留绿色分组和清晰的完成标记。 | 发布 `0.1.26` patch 版本，将 shared deliverable group、skill display name 和文档统一改为兼容性更好的 `✅ Open Browser Use`。 |

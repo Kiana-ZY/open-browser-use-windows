@@ -88,7 +88,7 @@ JSONL audit rows with `--trace-log <path>`.
 Trace rows include session id, turn id, action, risk class, tab id, duration,
 success status, and error text. Risk classes are intentionally coarse:
 
-- `read` for page state, text, snapshots, screenshots, tabs, history, and ping/info.
+- `read` for diagnostics, page state, text, snapshots, screenshots, tabs, history, and ping/info.
 - `navigation` for opening, claiming, and navigating tabs.
 - `interaction` for click, fill, and cursor movement.
 - `file-system` for setting file chooser paths.

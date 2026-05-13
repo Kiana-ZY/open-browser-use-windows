@@ -195,6 +195,19 @@ func mcpErrorResponse(id any, code int, message string) map[string]any {
 func mcpTools() []mcpTool {
 	return []mcpTool{
 		{
+			Name:        "doctor",
+			Title:       "Diagnose Browser Integration",
+			Description: "Return Open Browser Use setup and connectivity diagnostics.",
+			InputSchema: objectSchema(map[string]any{
+				"browser": map[string]any{
+					"type":        "string",
+					"description": "Browser integration to inspect.",
+					"enum":        []string{browserChrome, browserEdge, browserAll},
+					"default":     browserChrome,
+				},
+			}, nil),
+		},
+		{
 			Name:        "ping",
 			Title:       "Ping Browser Backend",
 			Description: "Check that the Open Browser Use browser backend is reachable.",
@@ -423,7 +436,8 @@ func mcpTools() []mcpTool {
 			Title:       "Run Action Plan",
 			Description: "Run a line-oriented Open Browser Use action plan using the same session and current tab.",
 			InputSchema: objectSchema(map[string]any{
-				"script": stringSchema("Line-oriented action plan script."),
+				"script":            stringSchema("Line-oriented action plan script."),
+				"continue_on_error": boolSchema("Continue running later action lines after a failure."),
 			}, []string{"script"}),
 		},
 	}
@@ -469,6 +483,13 @@ func numberSchema(description string) map[string]any {
 	}
 }
 
+func boolSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "boolean",
+		"description": description,
+	}
+}
+
 func (server *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	var request struct {
 		Name      string         `json:"name"`
@@ -493,6 +514,10 @@ func (server *mcpServer) callTool(params json.RawMessage) (map[string]any, error
 		_ = server.runner.writeTrace(0, action, actionRisk(action), server.mcpTraceTabID(request.Name, request.Arguments, output), startedAt, err)
 	}
 	if err != nil {
+		var runErr actionRunError
+		if errors.As(err, &runErr) {
+			return mcpToolResult(runErr.Output)
+		}
 		return mcpToolErrorResult(err.Error()), nil
 	}
 	return mcpToolResult(output)
@@ -561,6 +586,8 @@ func tabIDFromToolOutput(output any) (int, bool) {
 
 func (server *mcpServer) runTool(name string, arguments map[string]any) (any, error) {
 	switch name {
+	case "doctor":
+		return server.runDoctorTool(arguments)
 	case "ping":
 		response, err := server.invoke("ping", map[string]any{})
 		if err != nil {
@@ -663,10 +690,25 @@ func (server *mcpServer) runTool(name string, arguments map[string]any) (any, er
 		if err != nil {
 			return nil, err
 		}
+		server.runner.continueOnError = optionalBoolArg(arguments, "continue_on_error")
 		return server.runner.run(script)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (server *mcpServer) runDoctorTool(arguments map[string]any) (any, error) {
+	browser := strings.ToLower(strings.TrimSpace(optionalStringArg(arguments, "browser")))
+	if browser == "" {
+		browser = browserChrome
+	}
+	if browser != browserChrome && browser != browserEdge && browser != browserAll {
+		return nil, fmt.Errorf("doctor browser must be %q, %q, or %q", browserChrome, browserEdge, browserAll)
+	}
+	if browser == browserAll {
+		return buildDoctorSuiteReport(server.options, []string{browserChrome, browserEdge}), nil
+	}
+	return buildDoctorReport(server.options, browser), nil
 }
 
 func (server *mcpServer) invoke(method string, params map[string]any) (map[string]any, error) {

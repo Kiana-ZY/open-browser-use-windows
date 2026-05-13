@@ -8,6 +8,7 @@ download, or relay discovery fails.
 Start with:
 
 ```sh
+open-browser-use doctor --browser all --json
 open-browser-use ping --session-id "$OBU_SESSION_ID"
 open-browser-use info --session-id "$OBU_SESSION_ID"
 open-browser-use user-tabs --session-id "$OBU_SESSION_ID"
@@ -18,11 +19,12 @@ Do not reuse the CLI fallback session for agent browser work.
 
 If these fail:
 
-1. Confirm browser is installed.
-2. Confirm browser is running.
-3. Confirm the Open Browser Use extension is installed and enabled.
-4. Confirm the native host manifest is installed with `open-browser-use install-manifest` or rerun `open-browser-use setup`.
-5. Ask the user to approve any browser extension prompt.
+1. Inspect the `doctor --browser all --json` `browsers` array to see whether Chrome, Edge, or both are misconfigured.
+2. Confirm the selected browser is installed.
+3. Confirm the browser is running.
+4. Confirm the Open Browser Use extension is installed and enabled.
+5. Confirm the native host manifest is installed with `open-browser-use install-manifest` or rerun `open-browser-use setup`.
+6. Ask the user to approve any browser extension prompt.
 
 Do not silently install, enable, or repair browser integration when the action needs user approval.
 

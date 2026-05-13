@@ -35,7 +35,8 @@ Claude Code:
 把仓库里的 `skills/open-browser-use/` 整个复制过去即可。skill 本身负责告诉
 agent：
 
-- 先 `obu ping`
+- 诊断不确定或连接失败时先 `obu doctor --browser all --json`
+- 日常任务启动时先 `obu ping`
 - 再创建唯一 session id
 - 再 `open-tab` / `claim-tab`
 - 再做 `page-info` / `text` / `snapshot` / `cdp`
@@ -73,11 +74,12 @@ action、risk、tab id、耗时和成功/失败状态。
 
 ### 推荐工作流
 
-1. 先让 agent 调 `ping`
-2. 再调 `name_session`
-3. 再 `open_tab` 或 `claim_tab`
-4. 用 `page_info` / `history` / `cdp` / `run_action_plan`
-5. 结束时统一 `finalize_tabs`
+1. 环境或连接状态不确定时，先让 agent 调 `doctor`，参数用 `browser: "all"`
+2. 日常任务启动时调 `ping`
+3. 再调 `name_session`
+4. 再 `open_tab` 或 `claim_tab`
+5. 用 `page_info` / `history` / `cdp` / `run_action_plan`
+6. 结束时统一 `finalize_tabs`
 
 ### 推荐提示词
 
@@ -98,7 +100,7 @@ Claude Code 更常见的是 skill-first + shell-first 两种接法。
 让 Claude Code 按 skill 里的启动顺序调用：
 
 ```text
-先用 open-browser-use skill 做 ping，然后开新 session，打开 https://example.com，读 page-info，最后 finalize-tabs。
+先用 open-browser-use skill 做 doctor/ping，然后开新 session，打开 https://example.com，读 page-info，最后 finalize-tabs。
 ```
 
 这种方式最稳，适合单轮、短链路、命令可见的工作。
@@ -125,6 +127,8 @@ args = mcp --session-id obu-<task-id>
 
 CLI `--json` 与 MCP `structuredContent` 都应尽量对齐到：
 
+- `doctor` -> 单浏览器 `{ "ok": ..., "socket": ..., "nativeHost": ..., "browserExtension": ..., "checks": [...] }`
+- `doctor browser=all` -> `{ "ok": ..., "browsers": [...], "nextSteps": [...] }`
 - `ping` -> `{ "status": "pong" }`
 - `open_tab` / `open-tab` -> `{ "tab": ..., "navigate": ...? }`
 - `claim_tab` / `claim-tab` -> `{ "tab": ... }`
@@ -140,6 +144,21 @@ CLI `--json` 与 MCP `structuredContent` 都应尽量对齐到：
 - `name_session` / `finalize_tabs` / `turn_ended` -> `{ "ok": true }`
 
 这样 agent 可以少写很多“先判断是不是裸数组、是不是包在 result 里、是不是还要
+拆 CDP wrapper”的胶水逻辑。`run_action_plan` / `open-browser-use run` 的顶层
+输出还包含 `ok`；失败时仍返回已经完成的 steps，并在失败 step 上写入 `ok:
+false` 与 `error`。需要继续采集后续诊断证据时，CLI 使用
+`--continue-on-error`，MCP 使用 `continue_on_error: true`。
+
+## 多模态与 token 预算
+
+GPT-5 级多模态模型应该把截图当成视觉关键帧，而不是主要数据通道。推荐顺序是：
+
+- 用 `page-info --max-chars 1200` 或 `text --selector main --max-chars 2000` 获取低 token 文本。
+- 只有要点击/填写时再跑 `snapshot --limit 20` 获取 refs。
+- 在导航后、关键交互前后或失败时保存一张 viewport / selector screenshot。
+
+截图命令只返回本地文件路径、字节数和格式，不把 base64 写进 stdout 或 trace。
+这样模型仍能按需看图，同时 CLI/MCP 的结构化输出不会被图片数据撑爆。
 再拆一层”的适配逻辑。
 
 ## 安全与可观测
@@ -147,7 +166,7 @@ CLI `--json` 与 MCP `structuredContent` 都应尽量对齐到：
 OBU 会给没有显式 `request_id` 的浏览器 RPC 自动补一个 request id。action
 plan 和带 `--trace-log` 的 MCP direct tool call 还会给动作打 risk 标签：
 
-- `read`：读取状态、tab、history、page-info、text、snapshot、screenshot。
+- `read`：doctor、读取状态、tab、history、page-info、text、snapshot、screenshot。
 - `navigation`：打开、认领、导航 tab。
 - `interaction`：click、fill、move-mouse。
 - `file-system`：设置 file chooser 文件。

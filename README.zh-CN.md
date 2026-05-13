@@ -52,6 +52,8 @@ Chrome:
 
 ```powershell
 .\open-browser-use.exe version
+.\open-browser-use.exe doctor
+.\open-browser-use.exe doctor --browser all --json
 .\open-browser-use.exe ping --json
 .\open-browser-use.exe info --json
 ```
@@ -60,6 +62,8 @@ Chrome:
 
 ```powershell
 obu version
+obu doctor
+obu doctor --browser all --json
 obu ping --json
 obu info --json
 ```
@@ -79,6 +83,8 @@ obu finalize-tabs --keep "[]" --json
 
 | 命令 | 说明 |
 | --- | --- |
+| `obu doctor --json` | 诊断 native host、manifest、relay 和扩展状态 |
+| `obu doctor --browser all --json` | 一次性诊断 Chrome 和 Edge |
 | `obu ping --json` | 连通性检查 |
 | `obu info --json` | 扩展和 native host 元数据 |
 | `obu user-tabs --json` | 列出全部浏览器标签页 |

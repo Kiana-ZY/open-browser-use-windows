@@ -14,7 +14,8 @@ Every browser task starts with this sequence. Don't skip steps.
 ```cmd
 REM 1. Check connectivity (retry once if it fails)
 obu ping
-REM If ping fails: wait 2s, then obu ping again. Still failing? See Troubleshooting.
+REM If setup is uncertain or ping fails twice, run:
+obu doctor --browser all --json
 
 REM 2. Start a session
 SET OBU_SESSION_ID=obu-<task>-<timestamp>
@@ -52,6 +53,16 @@ obu run --trace-log trace.jsonl -c "ping"
 Each JSONL row records the session, turn, action, risk class, tab id, duration,
 and success/error status. `obu mcp --trace-log trace.jsonl` records the same
 trace format for direct MCP tool calls.
+
+For multimodal models, use screenshots as visual keyframes rather than the main
+data channel: bounded `page-info` / `text` for content, `snapshot` only when
+refs are needed, and one scoped or viewport `screenshot` for visual state.
+Screenshot results return local file metadata; do not inline image data into
+stdout or trace logs.
+
+`obu run` writes partial JSON output even when an action fails. Use
+`--continue-on-error` when later diagnostic steps should still run after a
+failure, for example to collect text or a final visual keyframe.
 
 ## Page Interaction
 
@@ -118,6 +129,8 @@ obu page-info --max-chars 2000 --json
 
 | Command | Use |
 |---------|-----|
+| `obu doctor --browser all --json` | Diagnose Chrome and Edge native host, manifest, relay, and extension status |
+| `obu doctor --json` | Diagnose one browser integration, defaulting to Chrome |
 | `obu ping` | Quick connectivity check |
 | `obu info` | Extension status and version |
 | `obu user-tabs` | List all browser tabs |
@@ -153,6 +166,8 @@ For the common read paths, prefer these stable `--json` shapes:
 
 For common action paths, prefer these stable `--json` shapes:
 
+- `obu doctor --json` -> `{ "ok": ..., "socket": ..., "nativeHost": ..., "browserExtension": ..., "checks": [...] }`
+- `obu doctor --browser all --json` -> `{ "ok": ..., "browsers": [...], "nextSteps": [...] }`
 - `obu ping --json` -> `{ "status": "pong" }`
 - `obu claim-tab --json` -> `{ "tab": ... }`
 - `obu navigate --json` -> `{ "navigate": ... }`
@@ -167,7 +182,7 @@ to ask for confirmation:
 
 | Risk | Actions |
 |------|---------|
-| `read` | `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait`, `page-info`, `text`, `snapshot`, `screenshot` |
+| `read` | `doctor`, `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait`, `page-info`, `text`, `snapshot`, `screenshot` |
 | `navigation` | `open-tab`, `claim-tab`, `navigate` |
 | `interaction` | `click`, `fill`, `move-mouse` |
 | `file-system` | `set-file-chooser-files` |
@@ -182,7 +197,7 @@ The CLI records the label but does not enforce confirmation for you.
 
 | Symptom | Action |
 |---------|--------|
-| `ping` fails | Wait 2s, retry once. Still failing → restart Edge. |
+| `ping` fails | Wait 2s, retry once. Still failing → run `obu doctor --browser all --json`, then restart Edge if the relay is unavailable. |
 | `open-tab` returns no id | Host may have disconnected. Wait 2s, retry. |
 | `wait` times out | Page load is slow. Use `sleep 3` then try `text` directly. |
 | `snapshot` returns nothing | Page not loaded yet. `sleep 2` then retry. |
@@ -216,7 +231,7 @@ obu finalize-tabs --keep "[{\"tabId\":N,\"status\":\"handoff\"}]"
 - Ask before submitting forms, making purchases, uploading files, or deleting.
 - Never guess tab IDs — always list with `user-tabs` first.
 - One session per task. Don't reuse `obu-cli`.
-- Run `obu ping` at the start of every browser task. Retry once on failure.
+- Run `obu ping` at the start of every browser task. Retry once on failure, then use `obu doctor --browser all --json` for diagnostics.
 - After `open-tab` or `claim-tab`, set `OBU_TAB_ID` from the returned id.
 - Re-run `obu snapshot` after any page navigation or DOM state change.
 - Finalize tabs at the end of every turn.

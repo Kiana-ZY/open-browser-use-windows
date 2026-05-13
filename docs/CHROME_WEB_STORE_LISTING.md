@@ -128,7 +128,7 @@ open-browser-use install-manifest
 ## Dashboard Checklist
 
 - Upload or select the current extension package, for example
-  `open-browser-use-chrome-extension-0.1.29.zip`.
+  `open-browser-use-chrome-extension-0.1.30.zip`.
 - Add at least one screenshot that shows the extension popup or a local
   Open Browser Use automation session.
 - Confirm the listing text matches the current native host requirement.

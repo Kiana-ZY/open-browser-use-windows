@@ -58,10 +58,236 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 			t.Fatalf("expected tool %q to include inputSchema, got %#v", name, tool)
 		}
 	}
-	for _, name := range []string{"user_tabs", "open_tab", "text", "snapshot", "click", "fill", "screenshot", "cdp", "run_action_plan"} {
+	for _, name := range []string{"doctor", "user_tabs", "open_tab", "text", "snapshot", "click", "fill", "screenshot", "cdp", "run_action_plan"} {
 		if !names[name] {
 			t.Fatalf("expected MCP tools to include %q, got %#v", name, names)
 		}
+	}
+}
+
+func TestMCPToolCallDoctorReturnsReportWhenRelayUnavailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+
+	socketPath := filepath.Join(home, "missing.sock")
+	if runtime.GOOS == "windows" {
+		socketPath = "127.0.0.1:1"
+	}
+	server := newMCPServer(socketOptions{socketPath: socketPath, timeout: time.Millisecond})
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":"doctor","method":"tools/call","params":{"name":"doctor","arguments":{"browser":"edge"}}}`,
+		"",
+	}, "\n")
+	var output bytes.Buffer
+
+	if err := server.serve(strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := decodeMCPResponses(t, output.Bytes())
+	callResult, _ := responses[1]["result"].(map[string]any)
+	if callResult["isError"] != false {
+		t.Fatalf("expected diagnostic report, got %#v", callResult)
+	}
+	structured, ok := callResult["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structuredContent doctor report, got %#v", callResult)
+	}
+	if structured["ok"] != false || structured["browser"] != browserEdge {
+		t.Fatalf("expected not-ready edge doctor report, got %#v", structured)
+	}
+	socket, _ := structured["socket"].(map[string]any)
+	if socket["reachable"] != false || socket["error"] == "" {
+		t.Fatalf("expected unreachable socket detail, got %#v", socket)
+	}
+	checks, _ := structured["checks"].([]any)
+	if len(checks) == 0 {
+		t.Fatalf("expected doctor checks, got %#v", structured)
+	}
+}
+
+func TestMCPToolCallDoctorAllReturnsSuiteReport(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+
+	socketPath := filepath.Join(home, "missing.sock")
+	if runtime.GOOS == "windows" {
+		socketPath = "127.0.0.1:1"
+	}
+	server := newMCPServer(socketOptions{socketPath: socketPath, timeout: time.Millisecond})
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":"doctor","method":"tools/call","params":{"name":"doctor","arguments":{"browser":"all"}}}`,
+		"",
+	}, "\n")
+	var output bytes.Buffer
+
+	if err := server.serve(strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := decodeMCPResponses(t, output.Bytes())
+	callResult, _ := responses[1]["result"].(map[string]any)
+	if callResult["isError"] != false {
+		t.Fatalf("expected diagnostic report, got %#v", callResult)
+	}
+	structured, ok := callResult["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structuredContent doctor suite report, got %#v", callResult)
+	}
+	if structured["ok"] != false {
+		t.Fatalf("expected not-ready suite report, got %#v", structured)
+	}
+	browsers, _ := structured["browsers"].([]any)
+	if len(browsers) != 2 {
+		t.Fatalf("expected two browser reports, got %#v", structured)
+	}
+	first, _ := browsers[0].(map[string]any)
+	second, _ := browsers[1].(map[string]any)
+	if first["browser"] != browserChrome || second["browser"] != browserEdge {
+		t.Fatalf("expected chrome then edge reports, got %#v", browsers)
+	}
+}
+
+func TestMCPToolCallDoctorReportsDiagnostics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stablePath, err := stableNativeHostPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(stablePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stablePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := defaultNativeHostManifestPath(browserChrome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := nativeManifest(defaultChromeExtensionID, stablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "obu-mcp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	socketPath := filepath.Join(socketDir, "browser.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			result := any(map[string]any{})
+			switch method {
+			case "ping":
+				result = "pong"
+			case "getInfo":
+				result = map[string]any{
+					"version": version,
+					"metadata": map[string]any{
+						"extensionId": defaultChromeExtensionID,
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	server := newMCPServer(socketOptions{socketPath: socketPath, timeout: time.Second})
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":"doctor","method":"tools/call","params":{"name":"doctor","arguments":{"browser":"chrome"}}}`,
+		"",
+	}, "\n")
+	var output bytes.Buffer
+
+	if err := server.serve(strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	responses := decodeMCPResponses(t, output.Bytes())
+	callResult, _ := responses[1]["result"].(map[string]any)
+	if callResult["isError"] != false {
+		t.Fatalf("expected successful doctor tool result, got %#v", callResult)
+	}
+	structured, ok := callResult["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structuredContent doctor report, got %#v", callResult)
+	}
+	if structured["ok"] != true || structured["browser"] != browserChrome {
+		t.Fatalf("expected ready chrome doctor report, got %#v", structured)
+	}
+	socket, _ := structured["socket"].(map[string]any)
+	if socket["reachable"] != true || socket["pingStatus"] != "pong" {
+		t.Fatalf("expected reachable socket with pong, got %#v", socket)
+	}
+	extension, _ := structured["browserExtension"].(map[string]any)
+	if extension["reachable"] != true || extension["version"] != version {
+		t.Fatalf("expected reachable extension version, got %#v", extension)
+	}
+	checks, _ := structured["checks"].([]any)
+	if len(checks) == 0 {
+		t.Fatalf("expected doctor checks, got %#v", structured)
 	}
 }
 
@@ -499,6 +725,85 @@ func TestMCPToolCallTextAndSnapshotResults(t *testing.T) {
 	items, _ := snapshotStructured["items"].([]any)
 	if len(items) != 1 {
 		t.Fatalf("expected one snapshot item, got %#v", snapshotStructured)
+	}
+}
+
+func TestMCPRunActionPlanReturnsPartialStructuredContent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows")
+	}
+	socketDir, err := os.MkdirTemp("/tmp", "obu-mcp-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(socketDir)
+	socketPath := filepath.Join(socketDir, "browser.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			serverDone <- err
+			return
+		}
+		if method, _ := request["method"].(string); method != "ping" {
+			serverDone <- fmt.Errorf("unexpected method %q", method)
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  "pong",
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+	}()
+
+	server := newMCPServer(socketOptions{socketPath: socketPath, timeout: time.Second})
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":"run","method":"tools/call","params":{"name":"run_action_plan","arguments":{"script":"ping\nunsupported-action"}}}`,
+		"",
+	}, "\n")
+	var output bytes.Buffer
+
+	if err := server.serve(strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	responses := decodeMCPResponses(t, output.Bytes())
+	runResult, _ := responses[1]["result"].(map[string]any)
+	if runResult["isError"] != false {
+		t.Fatalf("expected partial run structuredContent instead of MCP error, got %#v", runResult)
+	}
+	structured, _ := runResult["structuredContent"].(map[string]any)
+	if structured["ok"] != false {
+		t.Fatalf("expected failed action plan output, got %#v", structured)
+	}
+	steps, _ := structured["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("expected partial steps, got %#v", structured)
+	}
+	failedStep, _ := steps[1].(map[string]any)
+	if failedStep["ok"] != false || failedStep["error"] == "" {
+		t.Fatalf("expected failed step details, got %#v", failedStep)
 	}
 }
 

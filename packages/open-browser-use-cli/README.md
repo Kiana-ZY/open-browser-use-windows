@@ -44,9 +44,18 @@ expected extension id.
 Verify the browser connection:
 
 ```sh
+open-browser-use doctor
+open-browser-use doctor --json
+open-browser-use doctor --browser all --json
 open-browser-use ping
 open-browser-use info
 ```
+
+Use `doctor` first when setup fails or `ping` cannot connect. It checks the
+CLI version, OS, selected browser, stable native host path, native messaging
+manifest, relay connectivity, and extension version. On Windows it also checks
+the native messaging registry key for Chrome or Edge. Use `--browser all` when
+an agent or issue template needs one preflight covering both browser routes.
 
 ## One-Shot Commands
 
@@ -87,6 +96,12 @@ open-browser-use snapshot --tab-id <tab-id> --limit 50 --json
 open-browser-use screenshot --tab-id <tab-id> --selector main --output main.png --json
 ```
 
+For GPT-5-class multimodal agents, treat screenshots as visual keyframes rather
+than the main data channel. Use bounded `page-info` / `text` for content,
+`snapshot` only when interaction refs are needed, and one viewport or scoped
+`screenshot` to verify visual state. Screenshots return local file metadata and
+never inline base64 in stdout.
+
 For the high-frequency read commands, `--json` now returns stable object shapes:
 
 - `open-tab --json` -> `{ "tab": ..., "navigate": ...? }`
@@ -99,6 +114,8 @@ For the high-frequency read commands, `--json` now returns stable object shapes:
 
 For common action commands, `--json` also prefers stable object shapes:
 
+- `doctor --json` -> `{ "ok": ..., "version": ..., "socket": ..., "nativeHost": ..., "browserExtension": ..., "checks": [...] }`
+- `doctor --browser all --json` -> `{ "ok": ..., "version": ..., "browsers": [...], "nextSteps": [...] }`
 - `ping --json` -> `{ "status": "pong" }`
 - `claim-tab --json` -> `{ "tab": ... }`
 - `navigate --json` -> `{ "navigate": ... }`
@@ -138,6 +155,12 @@ Add `--trace-log <path>` when you want a local JSONL audit trail for an action
 plan. Each line records `timestamp`, `sessionId`, `turnId`, action line,
 action name, risk class, tab id, duration, success flag, and error text when
 the action fails.
+
+If an action fails, `run` still writes a partial JSON result before returning a
+non-zero exit code. The top-level output includes `ok: false`, `error`, and the
+failed step with its own `ok: false` and `error`. Use `--continue-on-error`
+when an agent should keep collecting later diagnostic steps such as text or a
+visual keyframe after an earlier action fails.
 
 Supported actions:
 
@@ -185,9 +208,10 @@ command = "obu"
 args = ["mcp"]
 ```
 
-The MCP server exposes browser tools such as `user_tabs`, `open_tab`,
-`claim_tab`, `navigate`, `wait_load`, `page_info`, `text`, `snapshot`, `screenshot`, `click`, `fill`, `cdp`, `history`,
-`run_action_plan`, `finalize_tabs`, and unrestricted `call`. It uses the same
+The MCP server exposes browser tools such as `doctor`, `user_tabs`, `open_tab`,
+`claim_tab`, `navigate`, `wait_load`, `page_info`, `text`, `snapshot`,
+`screenshot`, `click`, `fill`, `cdp`, `history`, `run_action_plan`,
+`finalize_tabs`, and unrestricted `call`. It uses the same
 relay discovery as the CLI; pass `--socket <path>` or `--socket-dir <dir>` in
 `args` only when the runtime needs an explicit relay.
 
@@ -197,10 +221,10 @@ the runner, so the MCP wrapper does not add a duplicate plan-level row.
 
 For the common high-frequency tools, the MCP server mirrors the same stable
 object shapes documented for CLI `--json` via `structuredContent`, so agents do
-not need separate adapters for CLI vs MCP on `ping`, `tabs`, `user_tabs`,
-`history`, `open_tab`, `claim_tab`, `navigate`, `page_info`, `text`,
-`snapshot`, `screenshot`, `click`, `fill`, `wait_load`, `name_session`,
-`finalize_tabs`, and `turn_ended`.
+not need separate adapters for CLI vs MCP on `doctor`, `ping`, `tabs`,
+`user_tabs`, `history`, `open_tab`, `claim_tab`, `navigate`, `page_info`,
+`text`, `snapshot`, `screenshot`, `click`, `fill`, `wait_load`,
+`name_session`, `finalize_tabs`, and `turn_ended`.
 
 ## Safety And Observability
 
@@ -208,7 +232,7 @@ Every browser JSON-RPC request receives a `request_id` when the caller has not
 already supplied one. Action plans and traced MCP tool calls also classify each
 step:
 
-- `read`: `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait-load`, `page-info`, `text`, `snapshot`, `screenshot`
+- `read`: `doctor`, `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait-load`, `page-info`, `text`, `snapshot`, `screenshot`
 - `navigation`: `open-tab`, `claim-tab`, `navigate`
 - `interaction`: `click`, `fill`, `move-mouse`
 - `file-system`: `set-file-chooser-files`

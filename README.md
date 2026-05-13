@@ -53,6 +53,8 @@ Enable Developer mode, then drag the ZIP into the extensions page.
 
 ```powershell
 .\open-browser-use.exe version
+.\open-browser-use.exe doctor
+.\open-browser-use.exe doctor --browser all --json
 .\open-browser-use.exe ping --json
 .\open-browser-use.exe info --json
 ```
@@ -61,6 +63,8 @@ When installed globally, the same checks are:
 
 ```powershell
 obu version
+obu doctor
+obu doctor --browser all --json
 obu ping --json
 obu info --json
 ```
@@ -82,6 +86,8 @@ Useful commands:
 
 | Command | Purpose |
 | --- | --- |
+| `obu doctor --json` | Diagnose native host, manifest, relay, and extension status |
+| `obu doctor --browser all --json` | Diagnose Chrome and Edge in one preflight |
 | `obu ping --json` | Connectivity check |
 | `obu info --json` | Extension and native host metadata |
 | `obu user-tabs --json` | List all browser tabs |

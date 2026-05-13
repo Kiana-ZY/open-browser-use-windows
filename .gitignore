@@ -11,6 +11,7 @@ Thumbs.db
 tmp/
 temp/
 .tmp/
+_local_nonessential/
 
 # Environment and local overrides
 .env

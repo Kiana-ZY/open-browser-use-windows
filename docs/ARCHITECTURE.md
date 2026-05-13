@@ -85,8 +85,8 @@ final deliverables move into the shared `✅ Open Browser Use` group.
 The CLI provides setup, diagnostics, direct browser commands, JSON output,
 line-oriented action plans, and an MCP server:
 
-- `setup`, `setup beta`, `install-manifest`, and `manifest` manage browser
-  integration.
+- `setup`, `setup beta`, `doctor`, `install-manifest`, and `manifest` manage
+  browser integration and diagnostics.
 - `ping`, `info`, `user-tabs`, `open-tab`, `claim-tab`, `navigate`,
   `page-info`, `text`, `snapshot`, `click`, `fill`, `screenshot`, `history`,
   `cdp`, and `finalize-tabs` cover common agent workflows.

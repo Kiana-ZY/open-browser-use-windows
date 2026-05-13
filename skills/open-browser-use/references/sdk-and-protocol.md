@@ -299,6 +299,7 @@ args = ["mcp", "--session-id", "obu-<task-or-conversation-id>"]
 mirror the CLI action surface:
 
 - `ping`, `info`, `tabs`, `user_tabs`, `history`
+- `doctor`
 - `open_tab`, `claim_tab`, `navigate`, `wait_load`, `page_info`
 - `text`, `snapshot`, `screenshot`, `click`, `fill`
 - `cdp`, `move_mouse`, `wait_file_chooser`, `set_file_chooser_files`
@@ -318,6 +319,7 @@ For the common agent-facing paths, prefer the same stable object shapes from
 both CLI `--json` and MCP `structuredContent`:
 
 - `ping` -> `{ "status": "pong" }`
+- `doctor` -> single-browser diagnostic report, or `{ "browsers": [...] }` when `browser` is `all`
 - `tabs` / `user_tabs` / `history` -> `{ "items": [...] }`
 - `open_tab` -> `{ "tab": ..., "navigate": ...? }`
 - `claim_tab` -> `{ "tab": ... }`
@@ -337,7 +339,7 @@ This keeps agent integrations from branching on transport-specific wrappers.
 The CLI and MCP server add `request_id` to browser JSON-RPC params when callers
 do not provide one. Action plans and traced MCP tools also label actions:
 
-- `read`: `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait-load`, `page-info`, `text`, `snapshot`, `screenshot`
+- `read`: `doctor`, `ping`, `info`, `tabs`, `user-tabs`, `history`, `wait-load`, `page-info`, `text`, `snapshot`, `screenshot`
 - `navigation`: `open-tab`, `claim-tab`, `navigate`
 - `interaction`: `click`, `fill`, `move-mouse`
 - `file-system`: `set-file-chooser-files`

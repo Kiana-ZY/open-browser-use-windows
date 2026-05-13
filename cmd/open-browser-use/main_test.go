@@ -384,6 +384,254 @@ func TestBrowserExtensionStatusSummaries(t *testing.T) {
 	}
 }
 
+func TestInspectNativeManifestPayloadAcceptsExpectedManifest(t *testing.T) {
+	stablePath := filepath.Join(t.TempDir(), "open-browser-use")
+	payload, err := json.Marshal(map[string]any{
+		"name": host.NativeHostName,
+		"path": stablePath,
+		"allowed_origins": []string{
+			"chrome-extension://" + defaultChromeExtensionID + "/",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := doctorReport{
+		NativeHost: doctorNativeHostReport{Name: host.NativeHostName},
+	}
+
+	ok, detail := inspectNativeManifestPayload(payload, stablePath, &report)
+	if !ok {
+		t.Fatalf("expected manifest to pass, detail=%q", detail)
+	}
+	if report.NativeHost.ManifestPathInFile != stablePath {
+		t.Fatalf("expected manifest path %q, got %q", stablePath, report.NativeHost.ManifestPathInFile)
+	}
+	if len(report.NativeHost.ManifestAllowedOrigins) != 1 {
+		t.Fatalf("expected one allowed origin, got %#v", report.NativeHost.ManifestAllowedOrigins)
+	}
+}
+
+func TestInspectNativeManifestPayloadRejectsWrongHostPath(t *testing.T) {
+	stablePath := filepath.Join(t.TempDir(), "open-browser-use")
+	payload, err := json.Marshal(map[string]any{
+		"name": host.NativeHostName,
+		"path": filepath.Join(t.TempDir(), "other-open-browser-use"),
+		"allowed_origins": []string{
+			"chrome-extension://" + defaultChromeExtensionID + "/",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := doctorReport{
+		NativeHost: doctorNativeHostReport{Name: host.NativeHostName},
+	}
+
+	ok, detail := inspectNativeManifestPayload(payload, stablePath, &report)
+	if ok {
+		t.Fatal("expected manifest to fail")
+	}
+	if !strings.Contains(detail, "expected") {
+		t.Fatalf("expected detail to explain expected path, got %q", detail)
+	}
+}
+
+func TestCobraDoctorJSONReportsRelayAndExtension(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stablePath, err := stableNativeHostPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(stablePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stablePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := defaultNativeHostManifestPath(browserChrome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := nativeManifest(defaultChromeExtensionID, stablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			result := any(map[string]any{})
+			switch method {
+			case "ping":
+				result = "pong"
+			case "getInfo":
+				result = map[string]any{
+					"version": version,
+					"metadata": map[string]any{
+						"extensionId": defaultChromeExtensionID,
+					},
+				}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"doctor", "--socket", socketPath, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got doctorReport
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK {
+		t.Fatalf("expected doctor report to be ok, got %#v", got.Checks)
+	}
+	if !got.Socket.Reachable || got.Socket.PingStatus != "pong" {
+		t.Fatalf("expected reachable socket with pong, got %#v", got.Socket)
+	}
+	if !got.NativeHost.ManifestOK {
+		t.Fatalf("expected manifest ok, got %#v", got.NativeHost)
+	}
+	if !got.BrowserExtension.Reachable || got.BrowserExtension.Version != version {
+		t.Fatalf("expected connected extension version, got %#v", got.BrowserExtension)
+	}
+}
+
+func TestCobraDoctorTextShowsNextStepsWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"doctor", "--timeout", "1ms"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "Open Browser Use doctor") {
+		t.Fatalf("expected doctor heading, got %q", got)
+	}
+	if !strings.Contains(got, "Status: needs attention") {
+		t.Fatalf("expected needs attention status, got %q", got)
+	}
+	if !strings.Contains(got, "Next steps:") {
+		t.Fatalf("expected next steps, got %q", got)
+	}
+}
+
+func TestCobraDoctorAllJSONReportsBothBrowsers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"doctor", "--browser", "all", "--socket", "127.0.0.1:1", "--timeout", "1ms", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var got doctorSuiteReport
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK {
+		t.Fatalf("expected not-ready suite report, got %#v", got)
+	}
+	if len(got.Browsers) != 2 {
+		t.Fatalf("expected chrome and edge reports, got %#v", got.Browsers)
+	}
+	if got.Browsers[0].Browser != browserChrome || got.Browsers[1].Browser != browserEdge {
+		t.Fatalf("expected chrome then edge reports, got %#v", got.Browsers)
+	}
+	if len(got.NextSteps) == 0 {
+		t.Fatalf("expected suite next steps, got %#v", got)
+	}
+}
+
+func TestCobraDoctorAllTextShowsOverallStatus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"doctor", "--browser", "all", "--socket", "127.0.0.1:1", "--timeout", "1ms"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "Browser: chrome") || !strings.Contains(got, "Browser: edge") {
+		t.Fatalf("expected both browser sections, got %q", got)
+	}
+	if !strings.Contains(got, "Overall status: needs attention") {
+		t.Fatalf("expected overall status, got %q", got)
+	}
+}
+
 func TestCobraUnknownCommand(t *testing.T) {
 	cmd := newRootCommand()
 	cmd.SetArgs([]string{"does-not-exist"})
@@ -615,6 +863,10 @@ func TestCobraRunActionPlan(t *testing.T) {
 			cdpMethod, _ := params["method"].(string)
 			result := map[string]any{}
 			switch {
+			case method == "nameSession":
+				result = map[string]any{}
+			case method == "finalizeTabs":
+				result = map[string]any{}
 			case method == "createTab":
 				result = map[string]any{"id": 123}
 			case method == "executeCdp" && cdpMethod == "Runtime.evaluate":
@@ -685,6 +937,18 @@ finalize-tabs []
 	}
 	if got.Steps[3].Risk != "read" {
 		t.Fatalf("expected page-info risk read, got %#v", got.Steps[3].Risk)
+	}
+	nameResult, _ := got.Steps[0].Response["result"].(map[string]any)
+	if nameResult["ok"] != true {
+		t.Fatalf("expected name-session ok result, got %#v", got.Steps[0].Response)
+	}
+	pageInfoResult, _ := got.Steps[3].Response["result"].(map[string]any)
+	if pageInfoResult["title"] != "Browser Use Docs" {
+		t.Fatalf("expected page-info title, got %#v", got.Steps[3].Response)
+	}
+	finalizeResult, _ := got.Steps[4].Response["result"].(map[string]any)
+	if finalizeResult["ok"] != true {
+		t.Fatalf("expected finalize-tabs ok result, got %#v", got.Steps[4].Response)
 	}
 
 	var methods []string
@@ -792,6 +1056,252 @@ func TestCobraRunActionPlanTraceLog(t *testing.T) {
 	}
 	if entry["action"] != "ping" || entry["risk"] != "read" || entry["ok"] != true {
 		t.Fatalf("unexpected trace entry %#v", entry)
+	}
+}
+
+func TestRunActionPlanNormalizesCommonInvokeResults(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket action plan test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(t.TempDir(), "obu.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 4; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result any
+			switch method {
+			case "ping":
+				result = "pong"
+			case "getTabs", "getUserTabs", "getUserHistory":
+				result = []any{map[string]any{"id": float64(123), "title": "Example Domain"}}
+			default:
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", `
+ping
+tabs
+user-tabs
+history --query example --limit 1
+`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Steps) != 4 {
+		t.Fatalf("expected 4 action steps, got %d", len(got.Steps))
+	}
+	pingResult, _ := got.Steps[0].Response["result"].(map[string]any)
+	if pingResult["status"] != "pong" {
+		t.Fatalf("expected normalized ping status, got %#v", got.Steps[0].Response)
+	}
+	for index, action := range []string{"tabs", "user-tabs", "history"} {
+		result, _ := got.Steps[index+1].Response["result"].(map[string]any)
+		items, _ := result["items"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("expected normalized %s items, got %#v", action, got.Steps[index+1].Response)
+		}
+	}
+}
+
+func TestRunActionPlanWritesPartialOutputOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket action plan test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(t.TempDir(), "obu.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		var request map[string]any
+		if err := wire.ReadJSON(conn, &request); err != nil {
+			serverDone <- err
+			return
+		}
+		if method, _ := request["method"].(string); method != "ping" {
+			serverDone <- fmt.Errorf("unexpected method %q", method)
+			return
+		}
+		if err := wire.WriteJSON(conn, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  "pong",
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", `
+ping
+unsupported-action
+`,
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected run to fail")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK {
+		t.Fatalf("expected failed run output, got %#v", got)
+	}
+	if len(got.Steps) != 2 {
+		t.Fatalf("expected successful and failed steps, got %#v", got.Steps)
+	}
+	if !got.Steps[0].OK {
+		t.Fatalf("expected first step ok, got %#v", got.Steps[0])
+	}
+	if got.Steps[1].OK || got.Steps[1].Error == "" {
+		t.Fatalf("expected second step error, got %#v", got.Steps[1])
+	}
+}
+
+func TestRunActionPlanContinueOnError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket action plan test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(t.TempDir(), "obu.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 2; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			if method, _ := request["method"].(string); method != "ping" {
+				_ = conn.Close()
+				serverDone <- fmt.Errorf("unexpected method %q", method)
+				return
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  "pong",
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"--continue-on-error",
+		"-c", `
+ping
+unsupported-action
+ping
+`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OK {
+		t.Fatalf("expected run output to record failure, got %#v", got)
+	}
+	if len(got.Steps) != 3 {
+		t.Fatalf("expected all steps with continue-on-error, got %#v", got.Steps)
+	}
+	if !got.Steps[0].OK || got.Steps[1].OK || !got.Steps[2].OK {
+		t.Fatalf("unexpected step statuses: %#v", got.Steps)
 	}
 }
 
@@ -1362,6 +1872,91 @@ screenshot --selector main --output %q
 	}
 	if _, err := os.Stat(outputPath); err != nil {
 		t.Fatalf("expected screenshot file: %v", err)
+	}
+}
+
+func TestRunActionPlanRetriesEmptyScreenshotData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test not compatible with Windows TCP relay")
+	}
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("obu-test-%d.sock", time.Now().UnixNano()))
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	outputPath := filepath.Join(t.TempDir(), "shot.png")
+	pngData := base64.StdEncoding.EncodeToString([]byte("png"))
+	var captureAttempts int
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for i := 0; i < 4; i++ {
+			conn, err := listener.Accept()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request map[string]any
+			if err := wire.ReadJSON(conn, &request); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			method, _ := request["method"].(string)
+			var result any = map[string]any{}
+			if method == "executeCdp" {
+				params, _ := request["params"].(map[string]any)
+				if cdpMethod, _ := params["method"].(string); cdpMethod == "Page.captureScreenshot" {
+					captureAttempts++
+					if captureAttempts == 2 {
+						result = map[string]any{"data": pngData}
+					}
+				}
+			}
+			if err := wire.WriteJSON(conn, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request["id"],
+				"result":  result,
+			}); err != nil {
+				_ = conn.Close()
+				serverDone <- err
+				return
+			}
+			_ = conn.Close()
+		}
+		serverDone <- nil
+	}()
+
+	cmd := newRootCommand()
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{
+		"run",
+		"--socket", socketPath,
+		"-c", fmt.Sprintf(`
+claim-tab 123
+screenshot --output %q
+`, outputPath),
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if captureAttempts != 2 {
+		t.Fatalf("expected screenshot retry, got %d attempts", captureAttempts)
+	}
+	var got actionRunOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := got.Steps[1].Response["result"].(map[string]any)
+	if result["bytes"].(float64) != 3 {
+		t.Fatalf("expected screenshot result after retry, got %#v", result)
 	}
 }
 
